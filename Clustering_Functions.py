@@ -165,7 +165,6 @@ def Plot_ballot_lengths(clusters, num_cands = 'Auto', filename=None):
     else:
         plt.savefig(filename)
 
-
 def Borda_vector(ballot_or_election,num_cands='Auto', borda_style='bord'):
     """
     Returns the Borda vector of the given ballot or election.  The "Borda vector of an election" means the (weighted) sum of the Borda vectors of its ballots.
@@ -383,6 +382,131 @@ def HH_dist(ballot1, ballot2, num_cands, order = 1):
     H2 = HH_proxy(ballot2, num_cands=num_cands)
     return np.linalg.norm(H1-H2,ord=order)
 
+def Candidate_dist_matrix(election, num_cands = 'Auto', method = 'mean_borda', trunc = None):
+    """ 
+    Returns a symmetric matrix whose (i,j) entry is one of these measurements of their 'distance':
+    method = 'successive': the reciprocal of the number of ballots on which candidates i & j appear next to each other.
+    method = 'coappearances': the reciprocal of the number of ballots on which candidates i & j both appear.
+    method = 'borda' : the average diference in borda_avg points that ballots award to candidates i & j
+    method = 'mean_borda' : the average over the completions of the ballots of the diference in the borda points awarded to candidates i & j
+
+    Args
+        election : dictionary matching ballots to weights
+        num_cands : the number of candidates.  Set to 'Auto' to ask the algorithm to determine it.
+        method : one of {'successive', 'coappearances'}
+        trunc : truncate all ballots at this position before applying the method.
+    """
+    if num_cands == 'Auto':
+        num_cands = max([item for ranking in election.keys() for item in ranking])
+    
+    M = np.zeros([num_cands,num_cands])
+    if trunc == None:
+        trunc = num_cands
+
+    if method == 'successive':
+        for ballot, weight in election.items():
+            for ballot_position in range(min(len(ballot),trunc)-1):
+                c1 = ballot[ballot_position]-1
+                c2 = ballot[ballot_position+1]-1
+                M[c1,c2] += weight
+                M[c2,c1] += weight
+    elif method == 'coappearances':
+        for ballot,weight in election.items():
+            trunc_ballot = ballot[:trunc]
+            for a,b in itertools.combinations(trunc_ballot,2):
+                M[a-1,b-1] +=weight
+                M[b-1,a-1] +=weight
+    elif method == 'borda' or method == 'mean_borda':
+        for ballot, weight in election.items():
+            trunc_ballot = ballot[:trunc]
+            num_missing = num_cands - len(ballot)
+            v = Borda_vector(ballot, num_cands=num_cands, borda_style='full_points')
+            for i in range(num_cands):
+                for j in range(num_cands):
+                    M[i,j] += np.abs(v[i]-v[j])*weight
+                    if method == 'mean_borda' and v[i]==v[j]:
+                        M[i,j] += (num_missing+1/3)*weight
+    else:
+        raise Exception("method must be one of {'successive', 'coappearances', 'borda', 'mean_borda'.")
+
+    if method == 'coappearances' or method == 'successive':
+        # return the component-wise reciprical of the matrix
+        for i in range(num_cands):
+            for j in  range(num_cands):
+                if i==j:
+                    M[i,j]=0
+                else:
+                    M[i,j]=1/M[i,j]     
+    return M
+
+def Candidate_MDS_plot(election, method = 'mean_borda', num_cands = 'Auto', trunc = None,
+                       party_names = None, filename = None):
+    """
+    Prints a multidimensional scaling (MSD) plot of the candidates, labeled by party.
+    The "distance" it approximates is the reciprocal of the Candidate_similarity_matrix entries.
+
+    Args
+        election : dictionary matching ballots with weights.
+        method : choice of {'successive', 'coappearances'}
+        num_cands : the number of candidates.  Set to 'Auto' to ask the algorithm to determine it.
+        trunc : truncate all ballots at this position before applying the method.
+        party_names : list of strings used as annotation labels.
+        filename : set to None if you don't want to save the plot.
+    """
+    if num_cands == 'Auto':
+        num_cands = max([item for ranking in election.keys() for item in ranking])
+    M = Candidate_dist_matrix(election, num_cands, method = method, trunc = trunc)
+    projections = MDS(n_components=2, dissimilarity='precomputed').fit_transform(M)
+    X = np.array([p[0] for p in projections])
+    Y = np.array([p[1] for p in projections])
+    fig, ax = plt.subplots()
+    ax.scatter(X,Y)
+    if not party_names == None:
+        for count in range(num_cands):
+            ax.annotate(f" {count+1}({party_names[count]})", xy=(X[count], Y[count]))
+    ax.grid(False)
+    ax.axis('off')
+    plt.show()
+    if filename != None:
+        plt.savefig(filename)
+
+def Group_candidates(election, num_cands = 'Auto', method = 'mean_borda', trunc = None, link = 'avg'):
+    """
+    Prints the steps of repeatedly grouping candidates via agglomerative clustering
+    using Candidate_dist_matrix as the pairwise distances.
+
+    Args
+        election : dictionary matching ballots with weights.
+        num_cands : the number of candidates.  Set to 'Auto' to ask the algorithm to determine it.
+        method : one of {'successive', 'coappearances'}
+        trunc : truncate all ballots at this position before applying the method.
+        link : one of {'min', 'avg', 'max'} for single, averaged or complete linkage clustering.
+    """
+    if num_cands == 'Auto':
+        num_cands = max([item for ranking in election.keys() for item in ranking])
+    M = Candidate_dist_matrix(election, num_cands, method = method, trunc = trunc)
+    L = [{n} for n in range(1,num_cands+1)]
+    print(L)
+    while len(L)>1:
+        best_val = np.infty
+        best_pair = (np.nan,np.nan)
+        for i in range(len(L)):
+            for j in range(i+1,len(L)):
+                comparisons = [M[x-1,y-1] for x in L[i] for y in L[j]]
+                if link == 'avg':
+                    score = np.mean(comparisons)
+                elif link == 'max':
+                    score = max(comparisons)
+                elif link == 'min':
+                    score = min(comparisons)
+                else:
+                    raise Exception("link must be 'avg' or 'min' or 'max'.")
+                if score<best_val:
+                    best_val = score
+                    best_pair = (i,j)
+        L = List_merge(L,best_pair[0],best_pair[1])
+        print(L)
+
 def kmeans(election, k=2, proxy='Borda', borda_style='bord', n_init=200, return_centroids=False):
     """
     Returns the clustering obtained by applying the k-means algorithm to the proxies of the ballots.
@@ -540,6 +664,48 @@ def Clustering_closeness(election,C1,C2, num_cands = 'Auto'):
         matchAA += np.abs(W1A-W2A) 
         matchAB += np.abs(W1A-W2B)
     return min(matchAA,matchAB)/sum(election.values())
+
+def Centroid_and_Medoid(C, num_cands = 'Auto', proxy='Borda', borda_style='bord', metric = 'Manhattan'):
+    """ 
+    Returns the centroid and medoid of the given election, C, which will typically be a single cluster.
+    The returned centroid is a proxy, while the returned medoid is a ballot.
+    
+    Args:
+        C : an election (typically a single cluster of an election)
+        choice of {'Borda', 'HH'} for Borda or head-to-head proxy vectors.
+        borda_style : choice of {'bord', 'standard', 'full_points'}, which is passed to Borda_vector (only if proxy == 'Borda') 
+        metric : choice of {'Euclidean', 'Manhattan'} for the distance function on the proxy vectors.
+
+    Returns:
+        tuple (centroid, medoid)
+    """
+    if num_cands == 'Auto':
+        num_cands = max([item for ranking in C.keys() for item in ranking])
+    X = [] # list of proxies
+    ballots = [] # list of ballots
+    weights = []  # list of weights
+    for ballot, weight in C.items():
+        if proxy == 'Borda':
+            X.append(Borda_vector(ballot, num_cands=num_cands))
+        else:
+            X.append(HH_proxy(ballot,num_cands=num_cands))
+        weights.append(weight)
+        ballots.append(ballot)
+
+    weights = np.array(weights)
+    X = np.array(X)
+    if metric == 'Manhattan':
+        similarities = manhattan_distances(X) 
+    else:
+        similarities = euclidean_distances(X)
+    row_sums = [np.dot(row,weights) for row in similarities]
+    medoid_index = np.argmin(row_sums)
+    medoid = ballots[medoid_index]
+    centroid = [np.dot(X[:,col_num],weights)
+                    for col_num in range(len(X[0]))]
+    centroid  = np.array(centroid)/sum(weights)
+    
+    return centroid, medoid
 
 def Cluster_mds_plot(election, clusters, proxy='Borda', borda_style='bord', threshold=10, label_threshold = np.infty,
                      metric = 'Euclidean', plot_centers = True, filename=None):
@@ -831,7 +997,8 @@ def HH_vectors_of_slate(A,num_cands):
         to_return.append(M[x,y])
     return np.array(to_return), (-1)*np.array(to_return)
 
-def Slate_cluster(election, verbose = True, Delta = True, share_ties = True):
+def Slate_cluster(election, verbose = True, Delta = True, share_ties = True,
+                  return_slates = False):
     """
     Returns a clustering with k=2 clusters using a slate-based method based the distance that ballots are from being strongly consistent.
     
@@ -845,9 +1012,12 @@ def Slate_cluster(election, verbose = True, Delta = True, share_ties = True):
         election : dictionary matching ballots to weights.
         verbose : boolean. 
         Delta :  set Delta=False to use the simpler (Delta-free) measurement that says the distance from a ballot and a condition is just the distance between their proxies.
-    
+        share_ties  : (boolean) whether to divide between the clusters the weight of a ballot that's equidistance A>B and B>A.
+        return_slates : (boolean) whether to also return the slates
+        
     Returns:
         A clustering (list of elections).
+        (or if return_slates == True) slate_dictionary, a clustering
     """
     num_cands = max([item for ranking in election.keys() for item in ranking])
     # create a matrix X whose rows are the HH proxies of the unique ballots
@@ -924,5 +1094,9 @@ def Slate_cluster(election, verbose = True, Delta = True, share_ties = True):
     # if verbose:
     #    print(f"Portion of ballots that tied = {total_shared_weight/sum(election.values())}")
     
-    return CA,CB
+    if return_slates:
+        slate_dict = {0:A, 1:B}
+        return slate_dict, (CA,CB)
+    else:
+        return CA,CB
 
