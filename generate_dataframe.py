@@ -1,15 +1,56 @@
 import pandas as pd
-from scot_helper_funcs import (
-    csv_parse,
-    process_election_with_method,
-    compute_centroids_medoids_silhouette,
-)
-from Clustering_Functions import Slate_cluster
 import glob
 import os
 from joblib import Parallel, delayed
 from datetime import datetime
+from sklearn.metrics import silhouette_score
+from Clustering_Functions import *
 
+def process_election_with_method(method, election):
+    if method == "meanBC":
+        C = kmeans(election, proxy="Borda", borda_style="bord")
+    elif method == "meanBA":
+        C = kmeans(election, proxy="Borda", borda_style="full_points")
+    elif method == "meanH":
+        C = kmeans(election, proxy="HH")
+    elif method == "medoBC":
+        C = kmedoids(election, proxy="Borda", borda_style="bord", verbose=False)
+    elif method == "medoBA":
+        C = kmedoids(election, proxy="Borda", borda_style="full_points", verbose=False)
+    elif method == "medoH":
+        C = kmedoids(election, proxy="HH", verbose=False)
+    elif method == 'slate':
+        C = Slate_cluster(election, verbose=False)
+    else:
+        raise Exception("unknown method")
+
+    return C
+
+def compute_centroids_medoids_silhouette(C, election, num_cands):
+    labels = []
+
+    XB = []
+    XH = []  # first build list of ballot proxies with repititions
+    for ballot, weight in election.items():
+        for _ in range(weight):
+            XB.append(Borda_vector(ballot, num_cands=num_cands))
+            XH.append(HH_proxy(ballot, num_cands=num_cands))
+            label = 0 if ballot in C[0].keys() else 1
+            labels.append(label)
+    silB = silhouette_score(XB, labels, metric="manhattan")
+    silH = silhouette_score(XH, labels, metric="manhattan")
+
+    # compute the centroids and medoids
+
+    medoids_B = dict()
+    medoids_H = dict()
+    centroids_B = dict()
+    centroids_H = dict()
+    for cn in range(2):  # cn = cluster number
+        centroids_B[cn], medoids_B[cn] = Centroid_and_Medoid(C[cn], proxy="Borda")
+        centroids_H[cn], medoids_H[cn] = Centroid_and_Medoid(C[cn], proxy="HH")
+
+    return centroids_B, medoids_B, silB, centroids_H, medoids_H, silH
 
 def process_election_file(full_filename):
     filename = os.path.basename(full_filename)
@@ -116,7 +157,7 @@ if __name__ == "__main__":
         ],
     )
 
-    results_df.to_pickle("results_with_slates.pkl")
+    results_df.to_pickle("results.pkl")
     print()
     print(f"[{datetime.now().strftime('%H:%M:%S')}] End Time", flush=True)
     print(f"[{datetime.now()-start_time}] Elapsed", flush=True)
