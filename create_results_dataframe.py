@@ -1,3 +1,6 @@
+# Creates results.df, which contains various measurements of various clustering methods 
+# run on all 1000+ Scottish elections
+
 import pandas as pd
 import glob
 import os
