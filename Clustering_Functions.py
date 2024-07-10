@@ -455,7 +455,7 @@ def Candidate_dist_matrix(election, num_cands = 'Auto', method = 'borda', trunc 
                 for j in range(num_cands):
                     M[i,j] += np.abs(v[i]-v[j])*weight
                     if method == 'mean_borda' and v[i]==v[j] and i!=j:
-                        M[i,j] += (num_missing+1/3)*weight
+                        M[i,j] += weight*(num_missing+1)/3
     else:
         raise Exception("method must be one of {'successive', 'coappearances', 'borda', 'mean_borda'.")
 
