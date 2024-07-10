@@ -188,39 +188,37 @@ def Plot_ballot_lengths(clusters, num_cands = 'Auto', filename=None, dpi = 600):
     else:
         plt.savefig(filename, dpi=dpi)
 
-def Borda_vector(ballot_or_election,num_cands='Auto', borda_style='bord'):
+def Borda_vector(ballot_or_election,num_cands='Auto', borda_style='pes', start = 0):
     """
     Returns the Borda vector of the given ballot or election.  The "Borda vector of an election" means the (weighted) sum of the Borda vectors of its ballots.
-
-    Set borda_style = 'standard' for the standard convention that, in an election with n candidates, awards n-k points to the candidate in position k, and awards zero points for missing candidates.
     
-    Set borda_style = 'bord' for  to use the "Conservative" convenction that awards n-k-1 points to the candidate in position k, and awards zero points for missing candidates.
+    Set borda_style = 'pes' for  to use the "pessimistic" convenction that missing candidates receive the minimum of the scores they'd have had if they'd been ranked.
     
-    Set borda_style = 'full_points' for  to use the "Averaged" convenction that every ballot awards exactly 1+2+\cdots+n Borda points; this is achieved for a short ballot by dividing the unawarded points equally among the missing candidates.
+    Set borda_style = 'avg' for  to use the "Averaged" convenction that missing candidates receive the average of the scores they'd have had if they'd been ranked
 
         
     Args:
         ballot_or_election : a single ballot (tuple) or an election (dictionary matching ballots to weights)
         num_cands : the number of candidates.  Set to 'Auto' to ask the algorithm to determine it, but only if an election is given, since a single ballot isn't enough to determine num_cands.
-        borda_style : choice of {'standard', 'bord', 'full_points'}
+        borda_style : choice of {'pes', 'avg'}
+        start : the lowest score awarded; for example, set start=1 if you want a full ballot to award {1,2,...,num_cands} points.
      
     Returns:
         the Borda vector (np.array) of the given ballot or election.                
     """
-    L = 1 if borda_style=='bord' else 0
     # Borda vector of a ballot
     if type(ballot_or_election) == tuple:
         if num_cands=='Auto':
             raise Exception("A single ballot is not enough to determine the number of candidates.")
         ballot = ballot_or_election
         to_return = [0 for _ in range(num_cands)]
-        for count in range(len(ballot)):
-            candidate = ballot[count]
-            to_return[candidate-1] = num_cands-count - L
-        if borda_style=='full_points':
+        for position in range(len(ballot)):
+            candidate = ballot[position]
+            to_return[candidate-1] = num_cands-position-1+start
+        if borda_style=='avg':
             missing_cands = set(range(1,num_cands+1))-set(ballot)
             for candidate in missing_cands:
-                to_return[candidate-1] += (len(missing_cands)+1)/2
+                to_return[candidate-1] = (len(missing_cands)-1)/2+start
             
     # Borda vector of an election
     else:
@@ -230,32 +228,30 @@ def Borda_vector(ballot_or_election,num_cands='Auto', borda_style='bord'):
 
         to_return = [0 for _ in range(num_cands)]
         for ballot, ballot_weight in election.items():
-            for count in range(len(ballot)):
-                candidate = ballot[count]
-                to_return[candidate-1] += ballot_weight*(num_cands-count-L)
-            if borda_style=='full_points':
+            for position in range(len(ballot)):
+                candidate = ballot[position]
+                to_return[candidate-1] += ballot_weight*(num_cands-position-1+start)
+            if borda_style=='avg':
                 missing_cands = set(range(1,num_cands+1))-set(ballot)
                 for candidate in missing_cands:
-                    to_return[candidate-1] += ballot_weight*(len(missing_cands)+1)/2
+                    to_return[candidate-1] += ballot_weight*((len(missing_cands)-1)/2+start)
     
     return np.array(to_return)
 
-def Borda_dist(CA, CB, num_cands = 'Auto', borda_style='bord', order = 1):
+def Borda_dist(CA, CB, num_cands = 'Auto', borda_style='pes', order = 1):
     """
     Returns the L^p distance between the Borda vectors of the given pair of ballots or elections,
         where p is called the order (for example, order=2 is the Euclidean distance).
-
-    Set borda_style = 'standard' for the standard convention that, in an election with n candidates, awards n-k points to the candidate in position k, and awards zero points for missing candidates.
     
-    Set borda_style = 'bord' for  to use the "Conservative" convenction that awards n-k-1 points to the candidate in position k, and awards zero points for missing candidates.
+    Set borda_style = 'pes' for  to use the "pessimistic" convenction that awards n-k points to the candidate in position k, and awards zero points for missing candidates.
     
-    Set borda_style = 'full_points' for  to use the "Averaged" convenction that every ballot awards exactly 1+2+\cdots+n Borda points; this is achieved for a short ballot by dividing the unawarded points equally among the missing candidates.
+    Set borda_style = 'avg' for  to use the "averaged" convenction that every ballot awards exactly 1+2+\cdots+n Borda points; this is achieved for a short ballot by dividing the unawarded points equally among the missing candidates.
     
     Args:
         CA, CB : a pair of ballots (tuples) or elections (dictionaries matching ballots to weights).
         num_cands : the number of candidates.  Set to 'Auto' to ask the algorithm to determine it,
                     but only if an election is given, since a ballot pair isn't enough to determine num_cands.
-        borda_style : choice of {'standard', 'bord', 'full_points'}
+        borda_style : choice of {'pes', 'avg'}
         order : the choice of p with resepct to which the L^p distance is computed.
     
     Returns:
@@ -288,14 +284,14 @@ def Candidate_matrix(election, num_cands = 'Auto'):
             to_return[ballot_position][candidate-1] += ballot_weight
     return to_return
 
-def Plot_clusters(clusters, method = 'Borda', borda_style='bord', num_cands = 'Auto', order = 'Auto', filename=None, dpi=600):
+def Plot_clusters(clusters, method = 'Borda', borda_style='pes', num_cands = 'Auto', order = 'Auto', filename=None, dpi=600):
     """
     Displays a bar plot that helps visualize the given election or clustering.
 
     Args:
         election: either an election (a dictionary matching ballots to weights) or a clustering (a list of elections).
         method: either 'Borda' for a Borda plot, or 'Mentions' for a stacked mentions plot.
-        borda_style: choice of {'bord', 'standard', 'full_points'}, which is passed to Borda_vector.
+        borda_style: choice of {'pes', 'avg'}, which is passed to Borda_vector.
         num_cands : the number of candidates.  Set to 'Auto' to ask the algorithm to determine it.
         order : Set order='Auto' to order the candidates by deceasing Borda scores in the first cluster.  Set say order=[3,2,4,1] to order the candidates according to the given list. 
         filename : to save the plot.     
@@ -450,7 +446,7 @@ def Candidate_dist_matrix(election, num_cands = 'Auto', method = 'borda', trunc 
         for ballot, weight in election.items():
             trunc_ballot = ballot[:trunc]
             num_missing = num_cands - len(ballot)
-            v = Borda_vector(ballot, num_cands=num_cands, borda_style='full_points')
+            v = Borda_vector(ballot, num_cands=num_cands, borda_style='avg')
             for i in range(num_cands):
                 for j in range(num_cands):
                     M[i,j] += np.abs(v[i]-v[j])*weight
@@ -568,7 +564,7 @@ def Group_candidates(election, num_cands = 'Auto', method = 'mean_borda', trunc 
         L = List_merge(L,best_pair[0],best_pair[1])
         print(L)
 
-def kmeans(election, k=2, proxy='Borda', borda_style='bord', n_init=200, return_centroids=False):
+def kmeans(election, k=2, proxy='Borda', borda_style='pes', n_init=200, return_centroids=False):
     """
     Returns the clustering obtained by applying the k-means algorithm to the proxies of the ballots.
 
@@ -576,7 +572,7 @@ def kmeans(election, k=2, proxy='Borda', borda_style='bord', n_init=200, return_
         election : dictionary matching ballots with weights.
         k : the number of clusters desired.
         proxy : choice of {'Borda', 'HH'} for Borda or head-to-head proxy vectors.
-        borda_style : choice of {'bord', 'standard', 'full_points'}, which is passed to Borda_vector (only if proxy == 'Borda') 
+        borda_style : choice of {'pes', 'avg'}, which is passed to Borda_vector (only if proxy == 'Borda') 
         n_init : the algorithm runs n_init independent times with different starting centers each time, and outputs the clustering that has the best score from all the runs.
         return_centroids : set to True if you want it to also return the centroids of the returned clustering.
 
@@ -611,7 +607,7 @@ def kmeans(election, k=2, proxy='Borda', borda_style='bord', n_init=200, return_
 def Manhattan_dist(A,B):
     return sum(np.abs(A-B))
 
-def kmedoids(election, k=2, proxy='Borda', borda_style='bord', verbose = False,
+def kmedoids(election, k=2, proxy='Borda', borda_style='pes', verbose = False,
              method = 'pam', share_ties = True, return_medoids=False):
     """
     Returns the clustering obtained by applying the k-medoid algorithm to the proxies of the ballots.
@@ -620,7 +616,7 @@ def kmedoids(election, k=2, proxy='Borda', borda_style='bord', verbose = False,
         election : dictionary matching ballots with weights.
         k : the number of clusters desired.
         proxy : choice of {'Borda', 'HH'} for Borda or head-to-head proxy vectors.
-        borda_style : choice of {'bord', 'standard', 'full_points'}, which is passed to Borda_vector (only if proxy == 'Borda') 
+        borda_style : choice of {'pes', 'avg'}, which is passed to Borda_vector (only if proxy == 'Borda') 
         verbose : set to True if you want it to print the medoids.
         method : choice of {'pam','alternate'}.  The method 'pam' is more accurate, while 'alternate' is faster
         share_ties : set to True if you want the weight of any ballot that's equidistant to mulitple medoids to be shared between the corresponding clusters in the final iteration. This requires overlaid code because sklearn gives ties to the lowest-indexed cluster (which causes repeatability isses).  
@@ -726,7 +722,7 @@ def Clustering_closeness(election,C1,C2, num_cands = 'Auto'):
         matchAB += np.abs(W1A-W2B)
     return min(matchAA,matchAB)/sum(election.values())
 
-def Centroid_and_Medoid(C, num_cands = 'Auto', proxy='Borda', borda_style='bord', metric = 'Manhattan'):
+def Centroid_and_Medoid(C, num_cands = 'Auto', proxy='Borda', borda_style='pes', metric = 'Manhattan'):
     """ 
     Returns the centroid and medoid of the given election, C, which will typically be a single cluster.
     The returned centroid is a proxy, while the returned medoid is a ballot.
@@ -734,7 +730,7 @@ def Centroid_and_Medoid(C, num_cands = 'Auto', proxy='Borda', borda_style='bord'
     Args:
         C : an election (typically a single cluster of an election)
         choice of {'Borda', 'HH'} for Borda or head-to-head proxy vectors.
-        borda_style : choice of {'bord', 'standard', 'full_points'}, which is passed to Borda_vector (only if proxy == 'Borda') 
+        borda_style : choice of {'pes', 'avg'}, which is passed to Borda_vector (only if proxy == 'Borda') 
         metric : choice of {'Euclidean', 'Manhattan'} for the distance function on the proxy vectors.
 
     Returns:
@@ -768,7 +764,7 @@ def Centroid_and_Medoid(C, num_cands = 'Auto', proxy='Borda', borda_style='bord'
     
     return centroid, medoid
 
-def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', proxy='Borda', borda_style='bord', threshold=10, 
+def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', proxy='Borda', borda_style='pes', threshold=10, 
                     label_threshold = np.infty, metric = 'Euclidean', party_names=None, filename=None, dpi = 600):
     """
     Displays an MDS (multi-dimensional scaling) plot for the proxies of all of the ballots in the election that received at least the given threshold number of votes.
@@ -778,7 +774,7 @@ def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', proxy='Borda'
         election : a dictionary matching ballots to weights.
         clusters : (optional) a clustering (list of elections that partitions the given election.)
         proxy : choice of {'Borda', 'HH'} for Borda or head-to-head proxy vectors.
-        borda_style : choice of {'bord', 'standard', 'full_points'}, which is passed to Borda_vector (only used if proxy == 'Borda') 
+        borda_style : choice of {'pes', 'avg'}, which is passed to Borda_vector (only used if proxy == 'Borda') 
         threshold : it ignores all ballots that were cast fewer than the threshold number of times.
         label_threshold : it labels all ballots that were cast at least the label_threshold number of times (set label_threshold=np.infty for no labeling)
         metric : choice of {'Euclidean', 'Manhattan'} for the proxy metric that's approximated.
