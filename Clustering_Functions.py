@@ -743,7 +743,7 @@ def Centroid_and_Medoid(C, num_cands = 'Auto', proxy='Borda', borda_style='pes',
     weights = []  # list of weights
     for ballot, weight in C.items():
         if proxy == 'Borda':
-            X.append(Borda_vector(ballot, num_cands=num_cands))
+            X.append(Borda_vector(ballot, num_cands=num_cands, borda_style=borda_style))
         else:
             X.append(HH_proxy(ballot,num_cands=num_cands))
         weights.append(weight)
@@ -918,8 +918,11 @@ def Slate_cluster(election, verbose = True, Delta = True, share_ties = True,
             ballot_proxy = X[ballot_to_row[ballot]]
             A_size = len(set(A).intersection(set(ballot)))
             B_size = len(set(B).intersection(set(ballot)))
-            diag_points =(math.comb(A_size,2) - math.comb(A_slate_size-A_size,2) \
-                        + math.comb(B_size,2) - math.comb(B_slate_size-B_size,2))/2
+            if Delta:
+                diag_points =(math.comb(A_slate_size,2) - math.comb(A_slate_size-A_size,2) \
+                            + math.comb(B_slate_size,2) - math.comb(B_slate_size-B_size,2))/2
+            else:
+                diag_points = 0
             A_dist = np.linalg.norm(A_proxy-ballot_proxy,ord=1) - diag_points
             B_dist = np.linalg.norm(B_proxy-ballot_proxy,ord=1) - diag_points
             dist = min(A_dist,B_dist)
