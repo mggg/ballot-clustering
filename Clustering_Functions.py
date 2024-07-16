@@ -830,7 +830,7 @@ def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', proxy='Borda'
         colors = [palat[x] for x in cluster_assignments]
     fig, ax = plt.subplots()
     ax.scatter(X,Y, s = weights, c = colors, alpha = .5)
-    ax.set_title('MDS Plot')
+    #ax.set_title('MDS Plot')
     ax.grid(False)
     ax.axis('off')
     for count in range(len(proxies)):
