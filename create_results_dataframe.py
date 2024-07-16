@@ -6,54 +6,42 @@ import glob
 import os
 from joblib import Parallel, delayed
 from datetime import datetime
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
 from Clustering_Functions import *
 
 def process_election_with_method(method, election):
     if method == "meanBC":
-        C = kmeans(election, proxy="Borda", borda_style="pes")
+        C, centers = kmeans(election, proxy="Borda", borda_style="pes", return_centroids=True)
     elif method == "meanBA":
-        C = kmeans(election, proxy="Borda", borda_style="avg")
+        C, centers = kmeans(election, proxy="Borda", borda_style="avg", return_centroids=True)
     elif method == "meanH":
-        C = kmeans(election, proxy="HH")
+        C, centers = kmeans(election, proxy="HH", return_centroids=True)
     elif method == "medoBC":
-        C = kmedoids(election, proxy="Borda", borda_style="pes", verbose=False)
+        C, centers = kmedoids(election, proxy="Borda", borda_style="pes", verbose=False, return_medoids=True)
     elif method == "medoBA":
-        C = kmedoids(election, proxy="Borda", borda_style="avg", verbose=False)
+        C, centers = kmedoids(election, proxy="Borda", borda_style="avg", verbose=False, return_medoids=True)
     elif method == "medoH":
-        C = kmedoids(election, proxy="HH", verbose=False)
+        C, centers = kmedoids(election, proxy="HH", verbose=False, return_medoids=True)
     elif method == 'slate':
-        C = Slate_cluster(election, verbose=False)
+        centers, C = Slate_cluster(election, verbose=False, return_slates=True)
     else:
         raise Exception("unknown method")
+    if type(centers)==list:
+        centers = {0:centers[0], 1:centers[1]} # convert list to dict.
+    return C, centers
 
-    return C
-
-def compute_centroids_medoids_silhouette(C, election, num_cands):
+def compute_scores(C, election, num_cands):
     labels = []
-
-    XB = []
     XH = []  # first build list of ballot proxies with repititions
     for ballot, weight in election.items():
         for _ in range(weight):
-            XB.append(Borda_vector(ballot, num_cands=num_cands))
             XH.append(HH_proxy(ballot, num_cands=num_cands))
             label = 0 if ballot in C[0].keys() else 1
             labels.append(label)
-    silB = silhouette_score(XB, labels, metric="manhattan")
-    silH = silhouette_score(XH, labels, metric="manhattan")
-
-    # compute the centroids and medoids
-
-    medoids_B = dict()
-    medoids_H = dict()
-    centroids_B = dict()
-    centroids_H = dict()
-    for cn in range(2):  # cn = cluster number
-        centroids_B[cn], medoids_B[cn] = Centroid_and_Medoid(C[cn], proxy="Borda")
-        centroids_H[cn], medoids_H[cn] = Centroid_and_Medoid(C[cn], proxy="HH")
-
-    return centroids_B, medoids_B, silB, centroids_H, medoids_H, silH
+    sil = silhouette_score(XH, labels, metric="manhattan")
+    cal = calinski_harabasz_score(XH, labels)
+    dav = davies_bouldin_score(XH,labels)
+    return sil, cal, dav
 
 def process_election_file(full_filename):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {full_filename}", flush=True)
@@ -61,7 +49,6 @@ def process_election_file(full_filename):
     num_cands, election, cand_names, location = csv_parse(full_filename)
     all_ballots = list(election.keys())
     num_unique_ballots = len(all_ballots)
-    candidates = list(range(1, num_cands + 1))
     num_voters = sum(election.values())
     avg_ballot_len = (
         sum([len(ballot) * election[ballot] for ballot in all_ballots]) / num_voters
@@ -83,22 +70,14 @@ def process_election_file(full_filename):
     method_list = ["meanBC", "meanBA", "meanH", "medoBC", "medoBA", "medoH", "slate"]
     for method in method_list:
         for trial in range(2):
-            if method == 'slate' and trial == 0:
-                slates, C = Slate_cluster(election, verbose=False, return_slates = True)
-            elif method == 'slate' and trial ==1:
-                slates, C = Slate_cluster(election, verbose=False, return_slates = True, Delta = False)
-            else:
-                slates = None
-                C = process_election_with_method(method, election)
-            if trial == 0:
-                centroids_B, medoids_B, silB, centroids_H, medoids_H, silH = (
-                    compute_centroids_medoids_silhouette(C, election, num_cands)
-                )
+            C, centers = process_election_with_method(method, election)
+            if trial == 1:
+                sil, cal, dav = (compute_scores(C, election, num_cands))
 
             Clusterings[(method,trial)]=C
             
             # build a dictionary storing the closenesses of the clusterings formed by the 7 different methods
-            # this dictionary will only be included in the last dataframe row for this election (slate trial 1).
+            # this dictionary will only be included in the last dataframe row (slate) for this election.
             if method=='slate' and trial ==1:
                 method_closeness = dict()
                 for m1 in method_list:
@@ -124,13 +103,10 @@ def process_election_file(full_filename):
                         parties,
                         method,
                         block_size,
-                        silB,
-                        silH,
-                        centroids_H,
-                        centroids_B,
-                        medoids_H,
-                        medoids_B,
-                        slates,
+                        sil,
+                        cal,
+                        dav,
+                        centers,
                         {0:C[0], 1:C[1]},
                         method_closeness
                     ])
@@ -165,13 +141,10 @@ if __name__ == "__main__":
             "parties",
             "method",
             "block_size",
-            "silB",
-            "silH",
-            "centroids_H",
-            "centroids_B",
-            "medoids_H",
-            "medoids_B",
-            "slates",
+            "sil",
+            "cal",
+            "dav",
+            "centers",
             "clustering",
             "method_closeness"
         ],

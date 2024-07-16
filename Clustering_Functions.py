@@ -407,7 +407,7 @@ def Candidate_dist_matrix(election, num_cands = 'Auto', method = 'borda', trunc 
     method = 'successive': the portion of ballots on which candidates i & j don't appear next to each other.
     method = 'coappearances': the portion of ballots on which candidates i & j don't both appear.
     method = 'borda' : the average diference in borda_avg points that ballots award to candidates i & j
-    method = 'mean_borda' : the average over the completions of the ballots of the diference in the borda points awarded to candidates i & j
+    method = 'borda_completion' : the average over the completions of the ballots of the diference in the borda points awarded to candidates i & j
 
     Args
         election : dictionary matching ballots to weights
@@ -441,7 +441,7 @@ def Candidate_dist_matrix(election, num_cands = 'Auto', method = 'borda', trunc 
             for a,b in combinations(trunc_ballot,2):
                 M[a-1,b-1] -=increment*weight
                 M[b-1,a-1] -=increment*weight
-    elif method == 'borda' or method == 'mean_borda':
+    elif method == 'borda' or method == 'borda_completion':
         M = np.zeros([num_cands,num_cands])
         for ballot, weight in election.items():
             trunc_ballot = ballot[:trunc]
@@ -450,14 +450,14 @@ def Candidate_dist_matrix(election, num_cands = 'Auto', method = 'borda', trunc 
             for i in range(num_cands):
                 for j in range(num_cands):
                     M[i,j] += np.abs(v[i]-v[j])*weight
-                    if method == 'mean_borda' and v[i]==v[j] and i!=j:
+                    if method == 'borda_completion' and v[i]==v[j] and i!=j:
                         M[i,j] += weight*(num_missing+1)/3
     else:
-        raise Exception("method must be one of {'successive', 'coappearances', 'borda', 'mean_borda'.")
+        raise Exception("method must be one of {'successive', 'coappearances', 'borda', 'borda_completion'.")
 
     return M/sum(election.values())
 
-def Candidate_MDS_plot(election, method = 'mean_borda', num_cands = 'Auto', trunc = None, size_markers = True,
+def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto', trunc = None, size_markers = True,
                        party_names = None, party_colors = None, filename = None, dpi = 600):
     """
     Prints a multidimensional scaling (MSD) plot of the candidates, labeled by party.
@@ -465,12 +465,12 @@ def Candidate_MDS_plot(election, method = 'mean_borda', num_cands = 'Auto', trun
     method = 'successive': the portion of ballots on which candidates i & j don't appear next to each other.
     method = 'coappearances': the portion of ballots on which candidates i & j don't both appear.
     method = 'borda' : the average diference in borda_avg points that ballots award to candidates i & j
-    method = 'mean_borda' : the average over the completions of the ballots of the diference in the borda points awarded to candidates i & j
+    method = 'borda_completion' : the average over the completions of the ballots of the diference in the borda points awarded to candidates i & j
 
 
     Args
         election : dictionary matching ballots with weights.
-        method : choice of {'successive', 'coappearances', 'borda', 'mean_borda'}
+        method : choice of {'successive', 'coappearances', 'borda', 'borda_completion'}
         num_cands : the number of candidates.  Set to 'Auto' to ask the algorithm to determine it.
         trunc : truncate all ballots at this position before applying the method.
         size_markers : (boolean) set to True to size markers by number of first place votes.
@@ -498,13 +498,17 @@ def Candidate_MDS_plot(election, method = 'mean_borda', num_cands = 'Auto', trun
         s = [0 for _ in range(num_cands)]
         for ballot,weight in election.items():
             s[ballot[0]-1]+=weight
-        ax.scatter(X,Y, c = party_colors, s=.5*np.array(s))
+        ax.scatter(X,Y, c = party_colors, s=.5*np.array(s), alpha=.5)
     else:
-        ax.scatter(X,Y, c = party_colors)
+        ax.scatter(X,Y, c = party_colors, alpha=.5)
     
     if not party_names == None:
         for count in range(num_cands):
             ax.annotate(f" {count+1}({party_names[count]})", xy=(X[count], Y[count]))
+    x_margin = (max(X) - min(X)) * 0.2  # 20% margin
+    y_margin = (max(Y) - min(Y)) * 0.2  # 20% margin
+    plt.xlim(min(X) - x_margin, max(X) + x_margin)
+    plt.ylim(min(Y) - y_margin, max(Y) + y_margin)
     ax.grid(False)
     ax.axis('off')
     if filename != None:
@@ -527,7 +531,7 @@ def List_merge(L,i,j): # Merges entries i and j of the given list.
             to_return.append(L[x+offset])
     return to_return
 
-def Group_candidates(election, num_cands = 'Auto', method = 'mean_borda', trunc = None, link = 'avg'):
+def Group_candidates(election, num_cands = 'Auto', method = 'borda_completion', trunc = None, link = 'avg'):
     """
     Prints the steps of repeatedly grouping candidates via agglomerative clustering
     using Candidate_dist_matrix as the pairwise distances.
