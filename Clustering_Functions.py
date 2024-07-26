@@ -412,7 +412,7 @@ def Candidate_dist_matrix(election, num_cands = 'Auto', method = 'borda', trunc 
     Args
         election : dictionary matching ballots to weights
         num_cands : the number of candidates.  Set to 'Auto' to ask the algorithm to determine it.
-        method : one of {'successive', 'coappearances'}
+        method : one of {'successive', 'coappearances', 'borda', 'borda_completion'}
         trunc : truncate all ballots at this position before applying the method.
     """
     if num_cands == 'Auto':
