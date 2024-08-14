@@ -18,13 +18,14 @@ import pandas as pd
 from itertools import permutations, combinations, chain
 import networkx as nx
 from networkx.algorithms import community
-
 from sklearn.cluster import KMeans
 from sklearn_extra.cluster import KMedoids
 from sklearn.manifold import MDS
 from sklearn.metrics.pairwise import manhattan_distances, euclidean_distances
+from scipy.stats import gaussian_kde
 
-# Convert the ballot rows to ints while leaving the candidates as strings
+# Helper function for csv_parse
+# (converts the ballot rows to ints while leaving the candidates as strings)
 def convert_row(row):
     return [int(item) if item.isdigit() else item for item in row]
 
@@ -94,6 +95,7 @@ def party_abrevs(cand_names):
             to_return.append('')
     return to_return
 
+# Helper function for Summarize_election
 def print_color(text,n): # print the text in the color associated to the integer index n.
     """
     Helper function for Summarize_election
@@ -270,6 +272,7 @@ def Borda_dist(CA, CB, num_cands = 'Auto', borda_style='pes', order = 1):
     VB = Borda_vector(CB, num_cands=num_cands, borda_style=borda_style)
     return np.linalg.norm(VA - VB,ord=order)
 
+# Helper function for Plot_clusters
 def Candidate_matrix(election, num_cands = 'Auto'):
     """
     Helper function for Plot_clusters   
@@ -517,6 +520,7 @@ def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto'
         plt.savefig(filename, dpi=dpi)
     plt.show()
 
+# Helper function for Group_candidates
 def List_merge(L,i,j): # Merges entries i and j of the given list.
     """
     Helper function for Group_candidates.   
@@ -882,6 +886,7 @@ def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', proxy='Borda'
     if return_projections:
         return projections
 
+# Helper functions for Slate_cluster
 def powerset(iterable): # returns a list of the nontrival non-full subsets of the given iterable
     """
     Helper function for Slate_cluster   
@@ -1015,8 +1020,8 @@ def Slate_cluster(election, verbose = True, Delta = True, share_ties = True,
     else:
         return CA,CB
 
+# helper function for Modularity_cluster
 def Clip_election(election, num_cands='Auto'):
-    # helper function for Modularity Clustering
     """
     returns an election in which the final candidate is removed from
     all full-length ballots in the given election.    
@@ -1036,6 +1041,7 @@ def Clip_election(election, num_cands='Auto'):
             to_return[ballot]=weight
     return to_return
 
+# Helper function for Modularity_cluster
 def Complete_Ballot_graph(election, num_cands='Auto', metric = 'Borda', borda_style='pes'):
     """  
     Returns the complete graph whose nodes are the ballot types in the given election.
@@ -1121,3 +1127,138 @@ def Modularity_cluster(election, k='Auto', num_cands = 'Auto',
         return C, modularity
     else:
         return C
+    
+# Helper function for Sunset_plot
+def Candidate_gap_order(election, num_cands='Auto', all_truncations = True):
+    """   
+    Returns the order of the candidates that minimized the sum over the ballots of the gap-count.
+
+    For a given order of the candidates, a ballot's gap-count is the number of candidates who are missing from the ballot but are between candidates on the ballot.  
+    Set all-truncations = True if you also want to to sum over all truncations of all ballots.  
+
+    Returns:
+        best_perm, best_score 
+    """
+    if num_cands == 'Auto':
+        num_cands = max([item for ranking in election.keys() for item in ranking])
+
+    best_score = np.infty
+    best_perm = None
+    for perm in permutations(range(1,num_cands+1)):
+        inverse_perm = Borda_vector(perm,num_cands=num_cands)
+        points = 0
+        for ballot,weight in election.items():
+            ordered_ballot = [inverse_perm[cand-1] for cand in ballot]
+            start = 2 if all_truncations else len(ordered_ballot)
+            for trunc in range(start,len(ordered_ballot)+1):
+                trunc_ballot = ordered_ballot[0:trunc]
+                gaps = max(trunc_ballot)-min(trunc_ballot)+1-len(trunc_ballot)
+                points += gaps*weight
+        if points<best_score:
+            best_score = points
+            best_perm = perm
+
+    return best_perm, best_score/sum(election.values())
+
+def Sunset_plot(election, clusters = None, cand_list=None, size = 10, 
+                 num_cands = 'Auto', perm = 'Auto', filename=None,
+                 draw_kde = True, draw_edges = False):
+    """
+    Plots a graph in which each row represents one of the 10 most frequently cast ballots
+    (with the most popular ballots at the bottom).  
+    The row's height equals the number of times the ballot was cast.  
+    The darker shade represents the first place vote.  
+      
+    Args:
+        election: dictionary matching ballots with weights
+        clusters: pass a 2-clustering if you wish the graph to be colored by cluster assignment
+        cand_list: must have the format that's returned by `csv_parse`
+        perm: encodes the order of the candidates.  If perm == 'Auto', then `Candidate_gap_order` will determine it.
+        filename: if you wish to save the plot
+        draw_kde: Each ballot has a Borda-weighted center of mass on the horizontal axis.  Set draw_kde=True to include a kde plot of these centers of mass.
+        draw_edges: set to `True` to draw a black edge around each row.
+    """
+    if num_cands == 'Auto':
+        num_cands = max([item for ranking in election.keys() for item in ranking])
+    if cand_list == None:
+        cand_list = list(range(1, num_cands+1))
+    if perm == 'Auto':
+        perm, _ = Candidate_gap_order(election, num_cands=num_cands, all_truncations=True)
+    all_ballots = [ballot for ballot in election.keys() if election[ballot]>0]
+    cluster_palat = ['grey','purple','brown','orange','b','c','g', 'r', 'm', 'y']
+
+    # inverse_perm maps candidate {1,...,num_cands} to rankings {1,...,num_cands}
+    inverse_perm = {x : perm.index(x)+1 for x in range(1,len(perm)+1)}
+
+    # make list of shortened candidate names 
+    parties = party_abrevs(cand_list)
+    short_cand_list = []
+    for count in range(num_cands):
+        cand = cand_list[perm[count]-1]
+        last_name = cand[1]
+        party = parties[perm[count]-1]
+        short_cand_list.append(f"{last_name} ({party})")
+
+    # create the axes
+    fig, ax = plt.subplots()
+    ax.set_xticks(range(1, num_cands+1))
+    ax.set_xticklabels(short_cand_list, rotation=90)
+
+    # loop over the most frequently cast ballots
+    ls = sorted(set(election.values()))
+    ballot_center_list = []
+    bottom = 0
+    count = 0
+    broken = False
+    while not broken:
+        weight = ls.pop()        
+        bs = [ballot for ballot in all_ballots if election[ballot]==weight]
+        for ballot in bs:
+            if clusters == None:
+                color = 'purple'
+            else:
+                for cluster_num in range(len(clusters)):
+                    if ballot in clusters[cluster_num].keys():
+                        color = cluster_palat[cluster_num]
+            ordered_ballot = [inverse_perm[x] for x in ballot]
+            ax.bar(x=ordered_ballot, height = weight, width = 1, 
+                   align = 'center', bottom = bottom,
+                   color = (color,.5))
+            # re-draw rectangle for first-place-vote to darken it:
+            ax.bar(x=ordered_ballot[0], height = weight, width = 1, 
+                   align = 'center', bottom = bottom,
+                   color = (color,.5))
+            
+            if draw_edges:
+                # draw box around the whole ballot
+                left_edge = min(ordered_ballot)-.5
+                width = max(ordered_ballot)-min(ordered_ballot)+1
+                ax.bar(x=left_edge, height = weight, width = width,
+                    align = 'edge', bottom = bottom, 
+                    facecolor = 'none', edgecolor = 'black')
+            
+            count +=1
+            bottom += weight+0
+
+            # compute center that will be used for kde plot
+            ballot_center = (sum([ordered_ballot[t]*(num_cands-t-1) for t in range(len(ballot))])/
+                sum([(num_cands-t-1) for t in range(len(ballot))]))
+            for _ in range(weight):
+                ballot_center_list.append(ballot_center)
+
+            if count>size:
+                broken = True
+                break
+
+    if draw_kde:
+        kde = gaussian_kde(ballot_center_list)
+        x = np.linspace(0, num_cands+1, 500)
+        y = kde(x)
+        y_scaled = y*sum(election.values())
+        ax.plot(x,y_scaled, color = 'black')
+
+    plt.tight_layout() # prevents cropping
+
+    if filename != None:
+        plt.savefig(filename, bbox_inches='tight')
+    plt.show()
