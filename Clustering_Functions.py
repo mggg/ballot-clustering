@@ -16,6 +16,8 @@ import random
 import math
 import pandas as pd
 from itertools import permutations, combinations, chain
+import networkx as nx
+from networkx.algorithms import community
 
 from sklearn.cluster import KMeans
 from sklearn_extra.cluster import KMedoids
@@ -700,31 +702,48 @@ def Random_clusters(election,k=2): # returns a random clustering of the ballots.
         C[die][ballot] = election[ballot]
     return C
 
-def Clustering_closeness(election,C1,C2, num_cands = 'Auto'):
+def Clustering_closeness(election,C1,C2, num_cands = 'Auto', return_perm = False):
     """
-    Returns the closeness of the given two clusterings, which means the portion of the total ballots for which the two partitions differ (with respect to the best matching of one partition's two clusters with the other's two clusters)
+    Returns the closeness of the given two clusterings, which means the portion of the total ballots for which the two partitions differ 
+    (with respect to the best matching of one partition's pieces with the other partition's pieces)
     
     Args:
         election : a dictionary matching ballots to weights.
-        C1 : a clustering (list of elections) which must have exactly 2 clusters.
-        C2 : a clustering (list of elections) which must have exactly 2 clusters.
+        C1 : a clustering (list of elections) 
+        C2 : a clustering (list of elections) 
         num_cands : the number of candidates.  Set to 'Auto' to ask the algorithm to determine it.
+        return_perm : If you wish for the best matching to also be returned.
 
     Returns:
-        The closeness of the two clusterings, which equals 0 of they are identical and equals about .5 if they are as unrelated as would be a random pair of clusterings.   
+        best_score, best_perm if return_perm else best_score
     """
     if num_cands == 'Auto':
         num_cands = max([item for ranking in election.keys() for item in ranking])
-    matchAA = 0
-    matchAB = 0
-    for ballot in election.keys():
-        W1A = C1[0][ballot] if ballot in C1[0].keys() else 0
-        W1B = C1[1][ballot] if ballot in C1[1].keys() else 0
-        W2A = C2[0][ballot] if ballot in C2[0].keys() else 0
-        W2B = C2[1][ballot] if ballot in C2[1].keys() else 0
-        matchAA += np.abs(W1A-W2A) 
-        matchAB += np.abs(W1A-W2B)
-    return min(matchAA,matchAB)/sum(election.values())
+    k = len(C1)
+    if k != len(C2):
+        raise Exception('C1 and C2 must same size.')
+    
+    perm_list = list(permutations(range(k)))
+    perm_scores = dict()
+    for perm in perm_list:
+        score = 0
+        for cluster_num in range(k):
+            C1_piece = C1[cluster_num]
+            C2_piece = C2[perm[cluster_num]]
+            for ballot, weight in C1_piece.items():
+                if ballot in C2_piece.keys():
+                    score += np.abs(weight - C2_piece[ballot])
+                else:
+                    score += weight
+        perm_scores[perm]=score/sum(election.values())
+    
+    best_score = min(perm_scores.values())
+    best_perm = [perm for perm in perm_list if perm_scores[perm] == best_score][0]
+
+    if return_perm:
+        return (best_score,best_perm)
+    else:
+        return best_score
 
 def Centroid_and_Medoid(C, num_cands = 'Auto', proxy='Borda', borda_style='pes', metric = 'Manhattan'):
     """ 
@@ -768,15 +787,17 @@ def Centroid_and_Medoid(C, num_cands = 'Auto', proxy='Borda', borda_style='pes',
     
     return centroid, medoid
 
-def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', proxy='Borda', borda_style='pes', threshold=10, 
-                    label_threshold = np.infty, metric = 'Euclidean', party_names=None, filename=None, dpi = 600):
+def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', proxy='Borda', borda_style='pes',
+                       threshold=10, label_threshold = np.infty, metric = 'Euclidean', 
+                       party_names=None, filename=None, dpi = 600, 
+                       projections = 'Auto', return_projections = False):
     """
     Displays an MDS (multi-dimensional scaling) plot for the proxies of all of the ballots in the election that received at least the given threshold number of votes.
     If clusters is provided, they are colored by their cluster assignments; otherwise, by party of 1st place vote.
     
     Args:
         election : a dictionary matching ballots to weights.
-        clusters : (optional) a clustering (list of elections that partitions the given election.)
+        clusters : if a clustering is provided, it will color by cluster assignment.
         proxy : choice of {'Borda', 'HH'} for Borda or head-to-head proxy vectors.
         borda_style : choice of {'pes', 'avg'}, which is passed to Borda_vector (only used if proxy == 'Borda') 
         threshold : it ignores all ballots that were cast fewer than the threshold number of times.
@@ -784,52 +805,68 @@ def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', proxy='Borda'
         metric : choice of {'Euclidean', 'Manhattan'} for the proxy metric that's approximated.
         party_names : if provided, it will color by party of first place vote.
         filename : to save the plot.   
+        projections: (optional) entering projections is useful for constructing multiple MDS plots of the same election using a common projection. 
+        return_projections: useful for constructing multiple MDS plots of the same election using a common projection.
+    Returns:
+        projections (if return_projections == True)
     """
 
     if num_cands == 'Auto':
         num_cands = max([item for ranking in election.keys() for item in ranking])
 
+    cluster_palat = ['grey','purple','brown','orange','b','c','g', 'r', 'm', 'y']
+    party_palat_dic = {'SNP':'yellow', 'Lab': 'red', 'Con':'blue','LD':'orange','Gr':'green'}
+
     ballots = []
     proxies = []
     weights = []
     colors = []
-    cluster_assignments = []
 
-    if clusters == None:
-        clusters = [election]
+    for ballot, weight in election.items():
+        if weight>=threshold:
+            if proxy=='Borda':
+                ballot_proxy = Borda_vector(ballot,num_cands=num_cands, borda_style=borda_style)
+            else:
+                ballot_proxy = HH_proxy(ballot,num_cands=num_cands)
+            ballots.append(ballot)
+            proxies.append(ballot_proxy)
+            weights.append(weight)
 
-    for cluster_num in range(len(clusters)):
-        cluster = clusters[cluster_num]
-        start_index = len(proxies)
-        for ballot,weight in cluster.items():
-            if weight>=threshold:
-                if proxy=='Borda':
-                    ballot_proxy = Borda_vector(ballot,num_cands=num_cands, borda_style=borda_style)
+            if party_names != None: # color by party of first place vote
+                party = party_names[ballot[0]-1]
+                color = party_palat_dic[party] if party in party_palat_dic.keys() else 'black'
+                colors.append(color)
+            elif clusters != None: # color by cluster assignment
+                cluster_assigment = []
+                for cluster_num in range(len(clusters)):
+                    C = clusters[cluster_num]
+                    if ballot in C.keys():
+                        cluster_assigment.append(cluster_num)
+                if len(cluster_assigment) == 0:
+                    color = 'black'
+                elif len(cluster_assigment) == 1:
+                    color = cluster_palat[cluster_assigment[0]]
                 else:
-                    ballot_proxy = HH_proxy(ballot,num_cands=num_cands)
-                ballots.append(ballot)
-                proxies.append(ballot_proxy)
-                weights.append(weight)
-                cluster_assignments.append(cluster_num)
-                if party_names != None:
-                    D = {'SNP':'yellow', 'Lab': 'red', 'Con':'blue','LD':'orange','Gr':'green'}
-                    party = party_names[ballot[0]-1]
-                    colors.append(D[party] if party in D.keys() else 'black')
+                    color = 'white'
+                colors.append(color)
+            else: # color everything black
+                colors.append('black')
 
     if metric == 'Euclidean':
         similarities = euclidean_distances(proxies)
     else:
         similarities = manhattan_distances(proxies)
-
-    projections = MDS(n_components=2, dissimilarity='precomputed').fit_transform(similarities)
+    if type(projections) == str: # if projections == 'Auto'
+        projections = MDS(n_components=2, dissimilarity='precomputed').fit_transform(similarities)
     X = np.array([p[0] for p in projections])
     Y = np.array([p[1] for p in projections])
 
-    palat = ['grey','purple','tomato','orange','b','c','g', 'r', 'm', 'y']
-    if len(clusters)>1:
-        colors = [palat[x] for x in cluster_assignments]
     fig, ax = plt.subplots()
     ax.scatter(X,Y, s = weights, c = colors, alpha = .5)
+    x_margin = (max(X) - min(X)) * 0.2  # 20% margin
+    y_margin = (max(Y) - min(Y)) * 0.2  # 20% margin
+    plt.xlim(min(X) - x_margin, max(X) + x_margin)
+    plt.ylim(min(Y) - y_margin, max(Y) + y_margin)
     #ax.set_title('MDS Plot')
     ax.grid(False)
     ax.axis('off')
@@ -841,6 +878,9 @@ def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', proxy='Borda'
         plt.show()
     else:
         plt.savefig(filename, dpi = dpi)
+
+    if return_projections:
+        return projections
 
 def powerset(iterable): # returns a list of the nontrival non-full subsets of the given iterable
     """
@@ -975,3 +1015,109 @@ def Slate_cluster(election, verbose = True, Delta = True, share_ties = True,
     else:
         return CA,CB
 
+def Clip_election(election, num_cands='Auto'):
+    # helper function for Modularity Clustering
+    """
+    returns an election in which the final candidate is removed from
+    all full-length ballots in the given election.    
+    """
+    if num_cands == 'Auto':
+        num_cands = max([item for ranking in election.keys() for item in ranking])
+
+    to_return = dict()
+    for ballot, weight in election.items():
+        if len(ballot) == num_cands:
+            trunc_ballot = ballot[:-1]
+            if trunc_ballot in to_return.keys():
+                to_return[trunc_ballot]+=weight
+            else:
+                to_return[trunc_ballot]=weight
+        else:
+            to_return[ballot]=weight
+    return to_return
+
+def Complete_Ballot_graph(election, num_cands='Auto', metric = 'Borda', borda_style='pes'):
+    """  
+    Returns the complete graph whose nodes are the ballot types in the given election.
+    The edge weight between two nodes equals n1*n2/d, where n1,n2 are the ballot weights (the number of times cast)
+    and d is the distance between the ballots (with respect to the chosen metric)
+
+    Args:
+        election : dictionary matching ballots with weights.
+        num_cands : the number candidates.
+        metric : choice of {'Borda', 'HH'} for Borda or head-to-head distance between pairs of ballots.
+        borda_style : choice of {'pes', 'avg'} (only used if metric == 'Borda') 
+
+    Returns:
+        networkx graph
+    """
+    if num_cands == 'Auto':
+        num_cands = max([item for ranking in election.keys() for item in ranking])
+
+    # first ensure that the full-lenth ballots are clipped.
+    trunc_election = Clip_election(election, num_cands)
+
+    G = nx.Graph()
+    G.add_nodes_from(trunc_election.keys())
+
+    for b1,b2 in permutations(G.nodes(),2):
+        if metric == 'Borda':
+            dist = Borda_dist(b1,b2, num_cands=num_cands, borda_style=borda_style)
+        else:
+            dist = HH_dist(b1,b2, num_cands=num_cands)
+
+        G.add_edge(b1, tuple(b2),
+                weight=trunc_election[b1]*trunc_election[b2]/dist)
+ 
+    return G
+
+def Modularity_cluster(election, k='Auto', num_cands = 'Auto', 
+                         metric = 'Borda', borda_style='pes', return_modularity = True):
+    """
+    Returns the clustering obtained by applying modularity maximization to the complete ballot graph.
+
+    Args:
+        election : dictionary matching ballots with weights.
+        k : the number of clusters desired.  Set to 'Auto' to optimize over partitions of all sizes.
+        num_cands: the number of candidates
+        metric : choice of {'Borda', 'HH'} for Borda or head-to-head proxy distances between pairs of ballots.
+        borda_style : choice of {'pes', 'avg'} (only used if metric == 'Borda') 
+    
+    Returns:
+        a clustering (if return_modularity == False).
+        clustering, modularity (if return_modularity == True)
+    """
+
+    if num_cands == 'Auto':
+        num_cands = max([item for ranking in election.keys() for item in ranking])
+
+    G = Complete_Ballot_graph(election, num_cands=num_cands, metric=metric, borda_style=borda_style)
+
+    if k == 'Auto':
+        community_list = community.greedy_modularity_communities(G,weight='weight')
+    else:
+        community_list = community.greedy_modularity_communities(G,weight='weight', cutoff=k, best_n=k)
+    
+    modularity = community.modularity(G,community_list)
+
+    # convert community_list to our standard format for a clustering: a list of elections.
+    # (note that after clipping, the full-length ballots must be added back in)
+    C = []
+    for this_community in community_list:
+        this_cluster = dict()
+        for ballot in this_community:
+            if ballot in election.keys():
+                this_cluster[ballot]=election[ballot]
+            if len(ballot)==num_cands-1: # un-do the truncation if necessary
+                missing_cand = list(set(range(1,num_cands+1))-set(ballot))[0]
+                expanded_ballot = list(ballot)
+                expanded_ballot.append(missing_cand)
+                expanded_ballot = tuple(expanded_ballot)
+                if expanded_ballot in election.keys():
+                    this_cluster[expanded_ballot]=election[expanded_ballot]
+        C.append(this_cluster)
+
+    if return_modularity:
+        return C, modularity
+    else:
+        return C

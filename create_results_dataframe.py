@@ -24,6 +24,12 @@ def process_election_with_method(method, election):
         C, centers = kmedoids(election, proxy="HH", verbose=False, return_medoids=True)
     elif method == 'slate':
         centers, C = Slate_cluster(election, verbose=False, return_slates=True)
+    elif method == 'modularity2':
+        C = Modularity_cluster(election, k=2)
+        centers = None
+    elif method == 'modularity':
+        C = Modularity_cluster(election)
+        centers = None
     else:
         raise Exception("unknown method")
     if type(centers)==list:
@@ -36,7 +42,10 @@ def compute_scores(C, election, num_cands):
     for ballot, weight in election.items():
         for _ in range(weight):
             XH.append(HH_proxy(ballot, num_cands=num_cands))
-            label = 0 if ballot in C[0].keys() else 1
+            label = 0
+            for count in range(len(C)):
+                if ballot in C[count].keys():
+                    label = count
             labels.append(label)
     sil = silhouette_score(XH, labels, metric="manhattan")
     cal = calinski_harabasz_score(XH, labels)
@@ -67,7 +76,8 @@ def process_election_file(full_filename):
 
     results = []
     Clusterings = dict()
-    method_list = ["meanBC", "meanBA", "meanH", "medoBC", "medoBA", "medoH", "slate"]
+    method_list = ["meanBC", "meanBA", "meanH", "medoBC", "medoBA", "medoH",
+                    "slate", "modularity2", "modularity"]
     for method in method_list:
         for trial in range(2):
             C, centers = process_election_with_method(method, election)
@@ -76,12 +86,12 @@ def process_election_file(full_filename):
 
             Clusterings[(method,trial)]=C
             
-            # build a dictionary storing the closenesses of the clusterings formed by the 7 different methods
-            # this dictionary will only be included in the last dataframe row (slate) for this election.
-            if method=='slate' and trial ==1:
+            # build a dictionary storing the closenesses of the clusterings formed by the 9 different methods
+            # this dictionary will only be included in the dataframe row for modularity2 for this election.
+            if method=='modularity' and trial ==1:
                 method_closeness = dict()
-                for m1 in method_list:
-                    for m2 in method_list:
+                for m1 in method_list[:-1]: # all except modularity
+                    for m2 in method_list[:-1]:
                         if m1==m2:
                             method_closeness[(m1,m1)]=Clustering_closeness(election,Clusterings[(m1,0)],Clusterings[(m1,1)])
                         else:
@@ -107,7 +117,7 @@ def process_election_file(full_filename):
                         cal,
                         dav,
                         centers,
-                        {0:C[0], 1:C[1]},
+                        {n:C[n] for n in range(len(C))},
                         method_closeness
                     ])
     return results
@@ -119,7 +129,7 @@ if __name__ == "__main__":
     print()
     filename_list = glob.glob("scot-elex/**/*.csv")
 
-    n_jobs = 128
+    n_jobs = 8
 
     results = Parallel(n_jobs=n_jobs)(
         delayed(process_election_file)(file) for file in filename_list
@@ -150,7 +160,7 @@ if __name__ == "__main__":
         ],
     )
 
-    results_df.to_pickle("results.pkl")
+    results_df.to_pickle("results_with_modularity.pkl")
     print()
     print(f"[{datetime.now().strftime('%H:%M:%S')}] End Time", flush=True)
     print(f"[{datetime.now()-start_time}] Elapsed", flush=True)
