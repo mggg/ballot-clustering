@@ -1044,7 +1044,7 @@ def Clip_election(election, num_cands='Auto'):
 # Helper function for Modularity_cluster
 def Complete_Ballot_graph(election, num_cands='Auto', metric = 'Borda', borda_style='pes'):
     """  
-    Returns the complete graph whose nodes are the ballot types in the given election.
+    Returns the complete graph whose nodes are the cast ballot types in the given election.
     The edge weight between two nodes equals n1*n2/d, where n1,n2 are the ballot weights (the number of times cast)
     and d is the distance between the ballots (with respect to the chosen metric)
 
@@ -1078,7 +1078,7 @@ def Complete_Ballot_graph(election, num_cands='Auto', metric = 'Borda', borda_st
     return G
 
 def Modularity_cluster(election, k='Auto', num_cands = 'Auto', 
-                         metric = 'Borda', borda_style='pes', return_modularity = True):
+                         metric = 'Borda', borda_style='pes', return_modularity = False):
     """
     Returns the clustering obtained by applying modularity maximization to the complete ballot graph.
 
@@ -1180,8 +1180,6 @@ def Sunset_plot(election, clusters = None, cand_list=None, size = 10,
     """
     if num_cands == 'Auto':
         num_cands = max([item for ranking in election.keys() for item in ranking])
-    if cand_list == None:
-        cand_list = list(range(1, num_cands+1))
     if perm == 'Auto':
         perm, _ = Candidate_gap_order(election, num_cands=num_cands, all_truncations=True)
     all_ballots = [ballot for ballot in election.keys() if election[ballot]>0]
@@ -1191,13 +1189,16 @@ def Sunset_plot(election, clusters = None, cand_list=None, size = 10,
     inverse_perm = {x : perm.index(x)+1 for x in range(1,len(perm)+1)}
 
     # make list of shortened candidate names 
-    parties = party_abrevs(cand_list)
-    short_cand_list = []
-    for count in range(num_cands):
-        cand = cand_list[perm[count]-1]
-        last_name = cand[1]
-        party = parties[perm[count]-1]
-        short_cand_list.append(f"{last_name} ({party})")
+    if cand_list == None:
+        short_cand_list = list(range(1, num_cands+1))
+    else:
+        parties = party_abrevs(cand_list)
+        short_cand_list = []
+        for count in range(num_cands):
+            cand = cand_list[perm[count]-1]
+            last_name = cand[1]
+            party = parties[perm[count]-1]
+            short_cand_list.append(f"{last_name} ({party})")
 
     # create the axes
     fig, ax = plt.subplots()
@@ -1217,6 +1218,7 @@ def Sunset_plot(election, clusters = None, cand_list=None, size = 10,
             if clusters == None:
                 color = 'purple'
             else:
+                color = 'black'
                 for cluster_num in range(len(clusters)):
                     if ballot in clusters[cluster_num].keys():
                         color = cluster_palat[cluster_num]
