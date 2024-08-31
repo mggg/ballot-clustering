@@ -12,6 +12,7 @@
 import csv
 import numpy as np 
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import random
 import math
 import pandas as pd
@@ -462,10 +463,10 @@ def Candidate_dist_matrix(election, num_cands = 'Auto', method = 'borda', trunc 
 
     return M/sum(election.values())
 
-def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto', trunc = None, size_markers = True,
+def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto', dimension = 2, trunc = None,
                        party_names = None, party_colors = None, filename = None, dpi = 600):
     """
-    Prints a multidimensional scaling (MSD) plot of the candidates, labeled by party.
+    Prints a multidimensional scaling (MSD) plot of the candidates, labeled by party.  Markers are sized by number of first place votes.
     The "distance" it approximates is one of the following:
     method = 'successive': the portion of ballots on which candidates i & j don't appear next to each other.
     method = 'coappearances': the portion of ballots on which candidates i & j don't both appear.
@@ -477,8 +478,8 @@ def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto'
         election : dictionary matching ballots with weights.
         method : choice of {'successive', 'coappearances', 'borda', 'borda_completion'}
         num_cands : the number of candidates.  Set to 'Auto' to ask the algorithm to determine it.
+        dimension : choice of {1,2,3} for dimension of MDS plot.
         trunc : truncate all ballots at this position before applying the method.
-        size_markers : (boolean) set to True to size markers by number of first place votes.
         party_names : list of strings used as annotation labels.
         party_colors : 'Auto', None, or list of colors.  Only use 'Auto' of party_names is provided.
         filename : set to None if you don't want to save the plot.
@@ -486,36 +487,55 @@ def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto'
     if num_cands == 'Auto':
         num_cands = max([item for ranking in election.keys() for item in ranking])
     M = Candidate_dist_matrix(election, num_cands, method = method, trunc = trunc)
+
+    # compute c = marker colors
     if party_colors == None:
-        party_colors = ['blue' for _ in range(num_cands)]
+        c = ['blue' for _ in range(num_cands)]
     elif party_colors == 'Auto':
         D = {'SNP':'yellow', 'Lab': 'red', 'Con':'blue','LD':'orange','Gr':'green'}
-        party_colors = []
+        c = []
         for party in party_names:
-            party_colors.append(D[party] if party in D.keys() else 'black') 
-    
-    projections = MDS(n_components=2, dissimilarity='precomputed').fit_transform(M)
-    X = np.array([p[0] for p in projections])
-    Y = np.array([p[1] for p in projections])
-    fig, ax = plt.subplots()
-
-    if size_markers:
-        s = [0 for _ in range(num_cands)]
-        for ballot,weight in election.items():
-            s[ballot[0]-1]+=weight
-        ax.scatter(X,Y, c = party_colors, s=.5*np.array(s), alpha=.5)
+            c.append(D[party] if party in D.keys() else 'black')
     else:
-        ax.scatter(X,Y, c = party_colors, alpha=.5)
-    
+        c = party_colors
+
+    # compute s = marker sizes
+    s = [0 for _ in range(num_cands)]
+    for ballot,weight in election.items():
+        s[ballot[0]-1]+=weight
+    s = .5*np.array(s)
+
+    # compute projections 
+    projections = MDS(n_components=dimension, dissimilarity='precomputed').fit_transform(M)
+    X = np.array([p[0] for p in projections])
+    Y = np.array([p[1] for p in projections]) if dimension>1 else np.array([0 for _ in range(num_cands)])
+
+    if dimension<3:
+        fig, ax = plt.subplots()
+        ax.scatter(X,Y, c = c, s = s, alpha=.5)
+
+        x_margin = (max(X) - min(X)) * 0.2  # 20% margin
+        plt.xlim(min(X) - x_margin, max(X) + x_margin)
+        if dimension==2:
+            y_margin = (max(Y) - min(Y)) * 0.2  # 20% margin
+            plt.ylim(min(Y) - y_margin, max(Y) + y_margin)
+        ax.grid(False)
+        ax.axis('off')
+
+    else:
+        Z = np.array([p[2] for p in projections])
+        fig = plt.figure()
+        ax = fig.add_subplot(projection='3d')
+        ax.scatter(X,Y,Z, c=c, s=s)
+        ax.set(xticklabels=[], yticklabels=[], zticklabels=[])
+
     if not party_names == None:
         for count in range(num_cands):
-            ax.annotate(f" {count+1}({party_names[count]})", xy=(X[count], Y[count]))
-    x_margin = (max(X) - min(X)) * 0.2  # 20% margin
-    y_margin = (max(Y) - min(Y)) * 0.2  # 20% margin
-    plt.xlim(min(X) - x_margin, max(X) + x_margin)
-    plt.ylim(min(Y) - y_margin, max(Y) + y_margin)
-    ax.grid(False)
-    ax.axis('off')
+            if dimension == 3:
+                ax.text(X[count],Y[count],Z[count], f" {count+1}({party_names[count]})")
+            else:
+                ax.annotate(f" {count+1}({party_names[count]})", xy=(X[count], Y[count]))
+
     if filename != None:
         plt.savefig(filename, dpi=dpi)
     plt.show()
@@ -791,7 +811,7 @@ def Centroid_and_Medoid(C, num_cands = 'Auto', proxy='Borda', borda_style='pes',
     
     return centroid, medoid
 
-def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', proxy='Borda', borda_style='pes',
+def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', dimension = 2, proxy='Borda', borda_style='pes',
                        threshold=10, label_threshold = np.infty, metric = 'Euclidean', 
                        party_names=None, filename=None, dpi = 600, 
                        projections = 'Auto', return_projections = False):
@@ -802,6 +822,7 @@ def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', proxy='Borda'
     Args:
         election : a dictionary matching ballots to weights.
         clusters : if a clustering is provided, it will color by cluster assignment.
+        dimension : choice of {1,2,3} for the dimension of the MDS plot.
         proxy : choice of {'Borda', 'HH'} for Borda or head-to-head proxy vectors.
         borda_style : choice of {'pes', 'avg'}, which is passed to Borda_vector (only used if proxy == 'Borda') 
         threshold : it ignores all ballots that were cast fewer than the threshold number of times.
@@ -861,22 +882,35 @@ def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', proxy='Borda'
     else:
         similarities = manhattan_distances(proxies)
     if type(projections) == str: # if projections == 'Auto'
-        projections = MDS(n_components=2, dissimilarity='precomputed').fit_transform(similarities)
-    X = np.array([p[0] for p in projections])
-    Y = np.array([p[1] for p in projections])
+        projections = MDS(n_components=dimension, dissimilarity='precomputed').fit_transform(similarities)
 
-    fig, ax = plt.subplots()
-    ax.scatter(X,Y, s = weights, c = colors, alpha = .5)
-    x_margin = (max(X) - min(X)) * 0.2  # 20% margin
-    y_margin = (max(Y) - min(Y)) * 0.2  # 20% margin
-    plt.xlim(min(X) - x_margin, max(X) + x_margin)
-    plt.ylim(min(Y) - y_margin, max(Y) + y_margin)
-    #ax.set_title('MDS Plot')
-    ax.grid(False)
-    ax.axis('off')
+    X = np.array([p[0] for p in projections])
+    Y = np.array([p[1] for p in projections]) if dimension>1 else np.array([0 for _ in range(len(X))])
+
+    if dimension<3:
+        fig, ax = plt.subplots()
+        ax.scatter(X,Y, s = weights, c = colors, alpha = .5)
+        x_margin = (max(X) - min(X)) * 0.2  # 20% margin
+        plt.xlim(min(X) - x_margin, max(X) + x_margin)
+        if dimension == 2:
+            y_margin = (max(Y) - min(Y)) * 0.2  # 20% margin
+            plt.ylim(min(Y) - y_margin, max(Y) + y_margin)
+        ax.grid(False)
+        ax.axis('off')
+    else:
+        Z = np.array([p[2] for p in projections])
+        fig = plt.figure()
+        ax = fig.add_subplot(projection='3d')
+        ax.scatter(X,Y,Z, c=colors, s=weights)
+        ax.set(xticklabels=[], yticklabels=[], zticklabels=[])        
+
+
     for count in range(len(proxies)):
         if weights[count]>label_threshold:
-            ax.annotate(ballots[count], xy=(X[count], Y[count]))
+            if dimension == 3:
+                ax.text(X[count],Y[count],Z[count], f"{ballots[count]}")
+            else:
+                ax.annotate(ballots[count], xy=(X[count], Y[count]))
 
     if filename == None:
         plt.show()
