@@ -463,8 +463,8 @@ def Candidate_dist_matrix(election, num_cands = 'Auto', method = 'borda', trunc 
 
     return M/sum(election.values())
 
-def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto', dimension = 2, trunc = None,
-                       party_names = None, party_colors = None, filename = None, dpi = 600):
+def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto', dimension = 2, trunc = None, n_init = 500,
+                       party_names = None, party_colors = None, filename = None, return_error = False, dpi = 600):
     """
     Prints a multidimensional scaling (MSD) plot of the candidates, labeled by party.  Markers are sized by number of first place votes.
     The "distance" it approximates is one of the following:
@@ -480,9 +480,14 @@ def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto'
         num_cands : the number of candidates.  Set to 'Auto' to ask the algorithm to determine it.
         dimension : choice of {1,2,3} for dimension of MDS plot.
         trunc : truncate all ballots at this position before applying the method.
+        n_init : The number of times the SMACOF algorith will run with different initialializations.
         party_names : list of strings used as annotation labels.
         party_colors : 'Auto', None, or list of colors.  Only use 'Auto' of party_names is provided.
         filename : set to None if you don't want to save the plot.
+        return_error : set to True for funtion to return the error of the MDS approximation.
+
+    Returns:
+        error (if return_error is set to True)
     """
     if num_cands == 'Auto':
         num_cands = max([item for ranking in election.keys() for item in ranking])
@@ -505,8 +510,10 @@ def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto'
         s[ballot[0]-1]+=weight
     s = .5*np.array(s)
 
-    # compute projections 
-    projections = MDS(n_components=dimension, dissimilarity='precomputed').fit_transform(M)
+    # compute projections
+    model = MDS(n_components=dimension, dissimilarity='precomputed', metric = False,normalized_stress=True, n_init=n_init)
+    projections = model.fit_transform(M)
+    error = model.stress_
     X = np.array([p[0] for p in projections])
     Y = np.array([p[1] for p in projections]) if dimension>1 else np.array([0 for _ in range(num_cands)])
 
@@ -539,6 +546,9 @@ def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto'
     if filename != None:
         plt.savefig(filename, dpi=dpi)
     plt.show()
+
+    if return_error:
+        return error
 
 # Helper function for Group_candidates
 def List_merge(L,i,j): # Merges entries i and j of the given list.
