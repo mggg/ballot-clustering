@@ -463,8 +463,8 @@ def Candidate_dist_matrix(election, num_cands = 'Auto', method = 'borda', trunc 
 
     return M/sum(election.values())
 
-def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto', dimension = 2, trunc = None, n_init = 500,
-                       party_names = None, party_colors = None, filename = None, return_error = False, dpi = 600):
+def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto', dimension = 2, trunc = None, n_init = 500, metric = True,
+                       party_names = None, party_colors = None, filename = None, return_data = False, dpi = 600):
     """
     Prints a multidimensional scaling (MSD) plot of the candidates, labeled by party.  Markers are sized by number of first place votes.
     The "distance" it approximates is one of the following:
@@ -481,13 +481,14 @@ def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto'
         dimension : choice of {1,2,3} for dimension of MDS plot.
         trunc : truncate all ballots at this position before applying the method.
         n_init : The number of times the SMACOF algorith will run with different initialializations.
+        metric : set to True to use metric MDS, or False for non-metric MDS.  Since the 'borda' and 'borda_completions' methods are metrics, metric=True is appropriate for these. 
         party_names : list of strings used as annotation labels.
         party_colors : 'Auto', None, or list of colors.  Only use 'Auto' of party_names is provided.
         filename : set to None if you don't want to save the plot.
-        return_error : set to True for funtion to return the error of the MDS approximation.
+        return_data: useful if you want to know the projection error, or for constructing multiple MDS plots of the same election using a common projection.
 
     Returns:
-        error (if return_error is set to True)
+        projections, error (if return_data is set to True)
     """
     if num_cands == 'Auto':
         num_cands = max([item for ranking in election.keys() for item in ranking])
@@ -497,7 +498,7 @@ def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto'
     if party_colors == None:
         c = ['blue' for _ in range(num_cands)]
     elif party_colors == 'Auto':
-        D = {'SNP':'yellow', 'Lab': 'red', 'Con':'blue','LD':'orange','Gr':'green'}
+        D = {'SNP':'#FFE135', 'Lab': '#E32636', 'Con':'#0F4D92','LD':'#FF9933','Gr':'#4CBB17', 'Ind': '#008B8B'}
         c = []
         for party in party_names:
             c.append(D[party] if party in D.keys() else 'black')
@@ -511,7 +512,7 @@ def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto'
     s = .5*np.array(s)
 
     # compute projections
-    model = MDS(n_components=dimension, dissimilarity='precomputed', metric = False,normalized_stress=True, n_init=n_init)
+    model = MDS(n_components=dimension, dissimilarity='precomputed', n_init=n_init, metric=metric)
     projections = model.fit_transform(M)
     error = model.stress_
     X = np.array([p[0] for p in projections])
@@ -547,8 +548,25 @@ def Candidate_MDS_plot(election, method = 'borda_completion', num_cands = 'Auto'
         plt.savefig(filename, dpi=dpi)
     plt.show()
 
-    if return_error:
-        return error
+    if return_data:
+        return projections, error
+    
+# Helper function for Group_candidates
+def List_merge(L,i,j): # Merges entries i and j of the given list.
+    """
+    Helper function for Group_candidates.   
+    """
+    n = len(L)
+    to_return = []
+    for x in range(n-1):
+        offset = 0 if x<j else 1
+        if x<i:
+            to_return.append(L[x])
+        elif x==i:
+            to_return.append(L[i].union(L[j]))
+        else:
+            to_return.append(L[x+offset])
+    return to_return
 
 # Helper function for Group_candidates
 def List_merge(L,i,j): # Merges entries i and j of the given list.
@@ -821,10 +839,10 @@ def Centroid_and_Medoid(C, num_cands = 'Auto', proxy='Borda', borda_style='pes',
     
     return centroid, medoid
 
-def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', dimension = 2, proxy='Borda', borda_style='pes',
+def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', dimension = 2, n_init = 100, proxy='Borda', borda_style='pes',
                        threshold=10, label_threshold = np.infty, metric = 'Euclidean', 
                        party_names=None, filename=None, dpi = 600, 
-                       projections = 'Auto', return_projections = False):
+                       projections = 'Auto', return_data = False):
     """
     Displays an MDS (multi-dimensional scaling) plot for the proxies of all of the ballots in the election that received at least the given threshold number of votes.
     If clusters is provided, they are colored by their cluster assignments; otherwise, by party of 1st place vote.
@@ -833,6 +851,7 @@ def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', dimension = 2
         election : a dictionary matching ballots to weights.
         clusters : if a clustering is provided, it will color by cluster assignment.
         dimension : choice of {1,2,3} for the dimension of the MDS plot.
+        n_init : The number of times the SMACOF algorith will run with different initialializations.
         proxy : choice of {'Borda', 'HH'} for Borda or head-to-head proxy vectors.
         borda_style : choice of {'pes', 'avg'}, which is passed to Borda_vector (only used if proxy == 'Borda') 
         threshold : it ignores all ballots that were cast fewer than the threshold number of times.
@@ -841,16 +860,16 @@ def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', dimension = 2
         party_names : if provided, it will color by party of first place vote.
         filename : to save the plot.   
         projections: (optional) entering projections is useful for constructing multiple MDS plots of the same election using a common projection. 
-        return_projections: useful for constructing multiple MDS plots of the same election using a common projection.
+        return_data: useful if you want to know the projection error, or for constructing multiple MDS plots of the same election using a common projection.
     Returns:
-        projections (if return_projections == True)
+        projections, error (if return_data is set to True)
     """
 
     if num_cands == 'Auto':
         num_cands = max([item for ranking in election.keys() for item in ranking])
 
     cluster_palat = ['grey','purple','brown','orange','b','c','g', 'r', 'm', 'y']
-    party_palat_dic = {'SNP':'yellow', 'Lab': 'red', 'Con':'blue','LD':'orange','Gr':'green'}
+    party_palat_dic = {'SNP':'#FFE135', 'Lab': '#E32636', 'Con':'#0F4D92','LD':'#FF9933','Gr':'#4CBB17', 'Ind': '#008B8B'}
 
     ballots = []
     proxies = []
@@ -892,7 +911,11 @@ def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', dimension = 2
     else:
         similarities = manhattan_distances(proxies)
     if type(projections) == str: # if projections == 'Auto'
-        projections = MDS(n_components=dimension, dissimilarity='precomputed').fit_transform(similarities)
+        model = MDS(n_components=dimension, dissimilarity='precomputed', n_init=n_init)
+        projections = model.fit_transform(similarities)
+        error = model.stress_
+    else:
+        error = None
 
     X = np.array([p[0] for p in projections])
     Y = np.array([p[1] for p in projections]) if dimension>1 else np.array([0 for _ in range(len(X))])
@@ -927,8 +950,8 @@ def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', dimension = 2
     else:
         plt.savefig(filename, dpi = dpi)
 
-    if return_projections:
-        return projections
+    if return_data:
+        return projections, error
 
 # Helper functions for Slate_cluster
 def powerset(iterable): # returns a list of the nontrival non-full subsets of the given iterable
