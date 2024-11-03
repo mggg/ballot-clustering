@@ -23,7 +23,17 @@ from sklearn.cluster import KMeans
 from sklearn_extra.cluster import KMedoids
 from sklearn.manifold import MDS
 from sklearn.metrics.pairwise import manhattan_distances, euclidean_distances
+from sklearn.metrics import silhouette_score
+import scipy as sp
+from scipy import sparse
 from scipy.stats import gaussian_kde
+import gerrychain
+from gerrychain import Graph, Partition, tree, proposals
+from gerrychain.optimization import SingleMetricOptimizer
+from gerrychain.updaters import Tally, cut_edges
+import sknetwork as skn
+from functools import partial
+from tqdm import tqdm
 
 # Helper function for csv_parse
 # (converts the ballot rows to ints while leaving the candidates as strings)
@@ -754,6 +764,37 @@ def Random_clusters(election,k=2): # returns a random clustering of the ballots.
         C[die][ballot] = election[ballot]
     return C
 
+def Mallows_election(num_cands, num_clusters, centers, sizes, p=.5):
+    """
+    Mallows model for generating a random clustered election with complete ballots.
+
+    Parameters:
+        num_cands: number of candidates
+        num_clusters: number of clusters
+        centers: list of ballots that form the centers of the clusters (must be complete ballots)
+        sizes: list sizes for each cluster
+        p: parameter the geometric random variable that determines how many random adjacent swaps are made, starting from the center, to obtain each ballot.
+    Returns:
+        election, clustering
+    """
+    election = dict()
+    clustering = [dict() for _ in range(num_clusters)]
+
+    for i in range(num_clusters):
+        for _ in range(sizes[i]):
+            ballot = list(centers[i])
+            num_swaps = np.random.geometric(p)
+            for __ in range(num_swaps):
+                swap_idx = np.random.randint(num_cands-1)
+                x = ballot[swap_idx]
+                y = ballot[swap_idx+1]   
+                ballot[swap_idx] = y
+                ballot[swap_idx+1] = x
+            ballot = tuple(ballot)
+            clustering[i][ballot] = clustering[i].get(ballot, 0) + 1
+            election[ballot] = election.get(ballot, 0) + 1
+    return election, clustering
+
 def Clustering_closeness(election,C1,C2, num_cands = 'Auto', return_perm = False):
     """
     Returns the closeness of the given two clusterings, which means the portion of the total ballots for which the two partitions differ 
@@ -1087,29 +1128,50 @@ def Slate_cluster(election, verbose = True, Delta = True, share_ties = True,
     else:
         return CA,CB
 
-# helper function for Modularity_cluster
-def Clip_election(election, num_cands='Auto'):
-    """
-    returns an election in which the final candidate is removed from
-    all full-length ballots in the given election.    
-    """
-    if num_cands == 'Auto':
-        num_cands = max([item for ranking in election.keys() for item in ranking])
+def All_ballot_graph(num_cands, election=None, trunc=None):
+    """  
+    Returns a graph whose nodes are all of the possible ballots on num_cands candidates.
+    The weight of a node is the number of times the ballot was cast (or 0 if no election is given).
+    There is an edge (u,v) if the ballots u,v differ by one swap or truncation, with edge-weight (1+weight(u))(1+weight(v)).
 
-    to_return = dict()
-    for ballot, weight in election.items():
-        if len(ballot) == num_cands:
-            trunc_ballot = ballot[:-1]
-            if trunc_ballot in to_return.keys():
-                to_return[trunc_ballot]+=weight
+    Args:
+        num_cands : the number candidates
+        election : a dictionary of ballots and their weights (optional).
+        Trunc : the number of positions to truncate the ballots to (optional).
+
+    Returns:
+        networkx graph
+    """
+    k = trunc if trunc is not None else num_cands-1
+    G = nx.Graph()
+    for num_positions_filled in range(1, k + 1):
+        for ballot in it.permutations(range(1, num_cands + 1), num_positions_filled):
+            G.add_node(ballot, ballot_weight=0 if election else 1)
+    if election:
+        for ballot, ballot_weight in election.items():
+            truncated_ballot = ballot[:k]
+            if truncated_ballot in G.nodes():
+                G.add_node(truncated_ballot, ballot_weight=ballot_weight
+                            + G.nodes()[truncated_ballot]["ballot_weight"])
             else:
-                to_return[trunc_ballot]=weight
-        else:
-            to_return[ballot]=weight
-    return to_return
+                raise Exception(f"Unknown ballot found in election: {truncated_ballot}")
+    for old_ballot in G.nodes():
+        num_positions_filled = len(old_ballot)
+        if num_positions_filled > 1:
+            for i in range(num_positions_filled - 1):
+                # Add swapping edges.
+                new_ballot = list(old_ballot)
+                new_ballot[i + 1] = old_ballot[i]
+                new_ballot[i] = old_ballot[i + 1]
+                G.add_edge(old_ballot, tuple(new_ballot))
+                # Add truncation edges.
+                G.add_edge(old_ballot, old_ballot[:-1])
+    # Add edge weights.
+    for u, v in G.edges():
+        G.edges[u, v]['weight'] = (G.nodes[u]['ballot_weight']+1)*(G.nodes[v]['ballot_weight']+1)
+    return G
 
-# Helper function for Modularity_cluster
-def Complete_Ballot_graph(election, num_cands='Auto', metric = 'Borda', borda_style='pes'):
+def Cast_ballot_graph(election, num_cands='Auto', trunc = None, metric = 'Borda', borda_style='pes'):
     """  
     Returns the complete graph whose nodes are the cast ballot types in the given election.
     The edge weight between two nodes equals n1*n2/d, where n1,n2 are the ballot weights (the number of times cast)
@@ -1126,13 +1188,18 @@ def Complete_Ballot_graph(election, num_cands='Auto', metric = 'Borda', borda_st
     """
     if num_cands == 'Auto':
         num_cands = max([item for ranking in election.keys() for item in ranking])
-
-    # first ensure that the full-lenth ballots are clipped.
-    trunc_election = Clip_election(election, num_cands)
+    
+    if trunc == None:
+        trunc = num_cands - 1
 
     G = nx.Graph()
-    G.add_nodes_from(trunc_election.keys())
-
+    for ballot, ballot_weight in election.items():
+        truncated_ballot = ballot[:trunc]
+        if truncated_ballot in G.nodes():
+            G.nodes[truncated_ballot]['ballot_weight'] += ballot_weight    
+        else:
+            G.add_node(truncated_ballot, ballot_weight=ballot_weight)
+ 
     for b1,b2 in permutations(G.nodes(),2):
         if metric == 'Borda':
             dist = Borda_dist(b1,b2, num_cands=num_cands, borda_style=borda_style)
@@ -1140,21 +1207,43 @@ def Complete_Ballot_graph(election, num_cands='Auto', metric = 'Borda', borda_st
             dist = HH_dist(b1,b2, num_cands=num_cands)
 
         G.add_edge(b1, tuple(b2),
-                weight=trunc_election[b1]*trunc_election[b2]/dist)
+                weight=G.nodes[b1]['ballot_weight']*G.nodes[b2]['ballot_weight']/dist)
  
     return G
 
-def Modularity_cluster(election, k='Auto', num_cands = 'Auto', 
-                         metric = 'Borda', borda_style='pes', return_modularity = False):
+# Helper function for Modularity_cluster with method='Recom'
+def weighted_mst(graph, edge_label = 'weight'):
+    """
+    Builds a spanning tree chosen by Kruskal's method.
+    The weight of each edge e is randomly chosen from the interval [0, 1/edge_label].
+    """
+    for edge in graph.edges():
+        weight = random.random()*(1/graph.edges[edge][edge_label])
+        graph.edges[edge]["random_weight"] = weight
+
+    spanning_tree = nx.tree.minimum_spanning_tree(
+        graph, algorithm="kruskal", weight="random_weight"
+    )
+    return spanning_tree
+
+def Modularity_cluster(election, k='Auto', num_cands = 'Auto', graph = 'all_ballots', trunc = None,
+                       method = 'Leiden', metric = 'Borda', borda_style='pes',
+                       burst_length=5, num_bursts=100, return_modularity = False):
     """
     Returns the clustering obtained by applying modularity maximization to the complete ballot graph.
 
     Args:
         election : dictionary matching ballots with weights.
-        k : the number of clusters desired.  Set to 'Auto' to optimize over partitions of all sizes.
+        k : the number of clusters desired.  Must be 'Auto' for 'Leiden'; must be specified for 'Recom'.
         num_cands: the number of candidates
-        metric : choice of {'Borda', 'HH'} for Borda or head-to-head proxy distances between pairs of ballots.
-        borda_style : choice of {'pes', 'avg'} (only used if metric == 'Borda') 
+        graph : choice of {'all_ballots', 'cast_ballots'} for the type of ballot graph.
+        trunc: the number of positions to truncate the ballots when constructing the ballot graph.
+        method : choice of {'Leiden', 'greedy', 'Recom'} for the clustering algorithm.  'greedy' is slow.
+        metric : choice of {'Borda', 'HH'} for Borda or head-to-head proxy distances between pairs of ballots (only used if graph == 'cast_ballots').
+        borda_style : choice of {'pes', 'avg'} (only used if graph == 'cast_ballots' and metric == 'Borda' ) 
+        burst_length : the number of steps in each short burst (only used if method == 'Recom').
+        num_bursts : the number of short bursts (only used if method == 'Recom').
+        return_modularity : if True, returns the modularity of the clustering.
     
     Returns:
         a clustering (if return_modularity == False).
@@ -1164,32 +1253,92 @@ def Modularity_cluster(election, k='Auto', num_cands = 'Auto',
     if num_cands == 'Auto':
         num_cands = max([item for ranking in election.keys() for item in ranking])
 
-    G = Complete_Ballot_graph(election, num_cands=num_cands, metric=metric, borda_style=borda_style)
+    if trunc == None:
+        trunc = num_cands - 1
 
-    if k == 'Auto':
-        community_list = community.greedy_modularity_communities(G,weight='weight')
+    if graph == 'cast_ballots':
+        G = Cast_ballot_graph(election, num_cands=num_cands, trunc=trunc, metric=metric, borda_style=borda_style)
+    elif graph == 'all_ballots':
+        G = All_ballot_graph(num_cands, election, trunc=trunc)
     else:
-        community_list = community.greedy_modularity_communities(G,weight='weight', cutoff=k, best_n=k)
+        raise ValueError("graph must be 'cast_ballots' or 'all_ballots'")
+
+    if method == 'greedy':
+        if k == 'Auto':
+            community_list = community.greedy_modularity_communities(G,weight='weight')
+        else:
+            community_list = community.greedy_modularity_communities(G,weight='weight', cutoff=k, best_n=k)
+        modularity = community.modularity(G,community_list)
+        
+        # convert community_list to a dictionary matching truncated ballots to labels.
+        label_dict = {}
+        for label, this_community in enumerate(community_list):
+            for ballot in this_community:
+                label_dict[ballot] = label
+
+    elif method == 'Leiden':
+        if k != 'Auto':
+            raise ValueError("k must be 'Auto' if method is 'Leiden'")
+        adj = sparse.csr_matrix(nx.to_scipy_sparse_array(G, weight='weight', format='csr'))
+        model = skn.clustering.Leiden()   
+        labels = model.fit_predict(adj)
+        modularity = skn.clustering.get_modularity(adj, labels)
     
-    modularity = community.modularity(G,community_list)
+    elif method == 'Recom':
+        if k == 'Auto':
+            raise ValueError("k must be specified if method is 'Recom'")
 
-    # convert community_list to our standard format for a clustering: a list of elections.
-    # (note that after clipping, the full-length ballots must be added back in)
-    C = []
-    for this_community in community_list:
-        this_cluster = dict()
-        for ballot in this_community:
-            if ballot in election.keys():
-                this_cluster[ballot]=election[ballot]
-            if len(ballot)==num_cands-1: # un-do the truncation if necessary
-                missing_cand = list(set(range(1,num_cands+1))-set(ballot))[0]
-                expanded_ballot = list(ballot)
-                expanded_ballot.append(missing_cand)
-                expanded_ballot = tuple(expanded_ballot)
-                if expanded_ballot in election.keys():
-                    this_cluster[expanded_ballot]=election[expanded_ballot]
-        C.append(this_cluster)
+        total_weight = sum(election.values())
+        GG = gerrychain.graph.graph.Graph(G) # convert to gerrychain graph
+        initial_assignment = tree.recursive_tree_part(GG, pop_col = 'ballot_weight', 
+                                pop_target=total_weight/k, epsilon=1, parts=range(k),
+                                method = partial(tree.bipartition_tree, spanning_tree_fn=weighted_mst))
+        def mod_score(partition):
+            labels = np.array([partition.assignment[ballot] for ballot in ballot_list])  
+            return skn.clustering.get_modularity(adj, labels)
 
+        initial_partition = Partition(GG, assignment=initial_assignment,
+                                        updaters={'cut_edges': cut_edges, 'modularity': mod_score})
+        ballot_list = list(initial_partition.graph.nodes)
+        adj = sparse.csr_matrix(nx.to_scipy_sparse_array(G, weight='weight', format='csr'))
+        proposal = partial(proposals.recom, 
+                        pop_col='ballot_weight', pop_target=total_weight/k, epsilon=1,
+                        method = partial(tree.bipartition_tree, spanning_tree_fn=weighted_mst))
+
+        optimizer = SingleMetricOptimizer(
+            proposal=proposal,
+            initial_state=initial_partition,
+            constraints=[],
+            optimization_metric = lambda p: p['modularity'],
+            maximize=True
+        )
+        for _ in optimizer.short_bursts(burst_length=burst_length, num_bursts=num_bursts,
+                                                with_progress_bar=True):
+            pass
+        best_partition = optimizer.best_part 
+        modularity = optimizer.best_score
+        labels = np.array([best_partition.assignment[ballot] for ballot in ballot_list])  
+
+    else:
+        raise ValueError("method must be 'greedy', 'Leiden', or 'Recom'")
+
+    if method == 'Leiden' or method == 'Recom':
+        # convert labels to a dictionary matching truncated ballots to labels.
+        node_list = list(G.nodes)
+        label_dict = {}
+        for i in range(len(node_list)):
+            label_dict[node_list[i]] = labels[i]
+
+    # convert label_dict to our standard format for a clustering: a list of elections.
+    k = max(label_dict.values()) + 1 # number of clusters
+    C = [{} for _ in range(k)]
+    for ballot, weight in election.items():
+        truncated_ballot = ballot[:trunc]
+        label = label_dict[truncated_ballot]
+        C[label][ballot] = weight
+    # remove empty clusters (which come from labels only assigned to uncast ballots)
+    C = [c for c in C if sum(c.values()) > 0]  
+         
     if return_modularity:
         return C, modularity
     else:
