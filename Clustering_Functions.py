@@ -1145,7 +1145,7 @@ def All_ballot_graph(num_cands, election=None, trunc=None):
     k = trunc if trunc is not None else num_cands-1
     G = nx.Graph()
     for num_positions_filled in range(1, k + 1):
-        for ballot in it.permutations(range(1, num_cands + 1), num_positions_filled):
+        for ballot in permutations(range(1, num_cands + 1), num_positions_filled):
             G.add_node(ballot, ballot_weight=0 if election else 1)
     if election:
         for ballot, ballot_weight in election.items():
