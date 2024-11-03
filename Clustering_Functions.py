@@ -1227,7 +1227,7 @@ def weighted_mst(graph, edge_label = 'weight'):
     return spanning_tree
 
 def Modularity_cluster(election, k='Auto', num_cands = 'Auto', graph = 'all_ballots', trunc = None,
-                       method = 'Leiden', metric = 'Borda', borda_style='pes',
+                       method = 'Leiden', resolution = 1/20, metric = 'Borda', borda_style='pes',
                        burst_length=5, num_bursts=100, return_modularity = False):
     """
     Returns the clustering obtained by applying modularity maximization to the complete ballot graph.
@@ -1239,6 +1239,7 @@ def Modularity_cluster(election, k='Auto', num_cands = 'Auto', graph = 'all_ball
         graph : choice of {'all_ballots', 'cast_ballots'} for the type of ballot graph.
         trunc: the number of positions to truncate the ballots when constructing the ballot graph.
         method : choice of {'Leiden', 'greedy', 'Recom'} for the clustering algorithm.  'greedy' is slow.
+        resolution : the resolution parameter for the Leiden algorithm (only used if method == 'Leiden').  Larger values gives more clusters.   
         metric : choice of {'Borda', 'HH'} for Borda or head-to-head proxy distances between pairs of ballots (only used if graph == 'cast_ballots').
         borda_style : choice of {'pes', 'avg'} (only used if graph == 'cast_ballots' and metric == 'Borda' ) 
         burst_length : the number of steps in each short burst (only used if method == 'Recom').
@@ -1280,7 +1281,7 @@ def Modularity_cluster(election, k='Auto', num_cands = 'Auto', graph = 'all_ball
         if k != 'Auto':
             raise ValueError("k must be 'Auto' if method is 'Leiden'")
         adj = sparse.csr_matrix(nx.to_scipy_sparse_array(G, weight='weight', format='csr'))
-        model = skn.clustering.Leiden()   
+        model = skn.clustering.Leiden(resolution=resolution)   
         labels = model.fit_predict(adj)
         modularity = skn.clustering.get_modularity(adj, labels)
     
