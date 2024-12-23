@@ -1005,23 +1005,6 @@ def powerset(iterable): # returns a list of the nontrival non-full subsets of th
     l.pop(0)   # remove the empty set from the start of the list
     return l
 
-# The following returns the pair of HH Proxies for two partial orders
-# associated to the slate A
-def HH_vectors_of_slate(A,num_cands):
-    """
-    Helper function for Slate_cluster    
-    """
-    B = tuple(set(range(1,num_cands+1))-set(A)) # the compliment of A
-    M = np.zeros([num_cands,num_cands])
-    for x in A:
-        for y in B:
-            M[x-1,y-1] = 1/2
-            M[y-1,x-1] = -1/2
-    to_return = []
-    for x,y in combinations(range(num_cands),2):
-        to_return.append(M[x,y])
-    return np.array(to_return), (-1)*np.array(to_return)
-
 def Slate_cluster(election, verbose = True, Delta = True, share_ties = True,
                   return_slates = False):
     """
@@ -1037,7 +1020,7 @@ def Slate_cluster(election, verbose = True, Delta = True, share_ties = True,
         election : dictionary matching ballots to weights.
         verbose : boolean. 
         Delta :  set Delta=False to use the simpler (Delta-free) measurement that says the distance from a ballot and a condition is just the distance between their proxies.
-        share_ties  : (boolean) whether to divide between the clusters the weight of a ballot that's equidistance A>B and B>A.
+        share_ties  : (boolean) whether to divide between the clusters the weight of a ballot that's equidistance A>B and B>A (otherwise, tied ballots are assigned to cluster B)
         return_slates : (boolean) whether to also return the slates
         
     Returns:
@@ -1045,19 +1028,14 @@ def Slate_cluster(election, verbose = True, Delta = True, share_ties = True,
         (or if return_slates == True) slate_dictionary, a clustering
     """
     num_cands = max([item for ranking in election.keys() for item in ranking])
-    # create a matrix X whose rows are the HH proxies of the unique ballots
+    # create a matrix X whose rows are the Borda proxies of the unique ballots
     # and a dictionary matching each ballot type with its corresponding row in the matrix
-    # and a reverse dictionary to match each row number of the matrix with a ballot
     X = []
     ballot_to_row = dict()
-    row_to_ballot = dict()
     counter = 0
-    num_ballots = 0
     for ballot, weight in election.items():
-        num_ballots += weight
         ballot_to_row[ballot]=counter
-        row_to_ballot[counter]=ballot
-        X.append(HH_proxy(ballot,num_cands=num_cands))
+        X.append(Borda_vector(ballot,num_cands=num_cands))
         counter +=1
     
     best_score = float('inf')
@@ -1066,24 +1044,24 @@ def Slate_cluster(election, verbose = True, Delta = True, share_ties = True,
     # Determine the best slate
     for A in powerset(range(1,num_cands+1)):
         B = tuple(set(range(1,num_cands+1))-set(A)) # the compliment of A
-        A_slate_size = len(A)
-        B_slate_size = len(B)
-        A_proxy, B_proxy = HH_vectors_of_slate(A,num_cands)
         slate_score = 0
         
         for ballot, weight in election.items(): # compute dist from the ballot to the slate
             ballot_proxy = X[ballot_to_row[ballot]]
-            A_size = len(set(A).intersection(set(ballot)))
-            B_size = len(set(B).intersection(set(ballot)))
-            if Delta:
-                diag_points =(math.comb(A_slate_size,2) - math.comb(A_slate_size-A_size,2) \
-                            + math.comb(B_slate_size,2) - math.comb(B_slate_size-B_size,2))/2
-            else:
-                diag_points = 0
-            A_dist = np.linalg.norm(A_proxy-ballot_proxy,ord=1) - diag_points
-            B_dist = np.linalg.norm(B_proxy-ballot_proxy,ord=1) - diag_points
-            dist = min(A_dist,B_dist)
+            ballot_dist_to_A_over_B = 0
+            ballot_dist_to_B_over_A = 0
+            for i in A:
+                for j in B:
+                    if ballot_proxy[i-1]>ballot_proxy[j-1]:
+                        ballot_dist_to_B_over_A += 1
+                    elif ballot_proxy[i-1]<ballot_proxy[j-1]:
+                        ballot_dist_to_A_over_B += 1
+                    else:
+                        ballot_dist_to_A_over_B += 0.5
+                        ballot_dist_to_B_over_A += 0.5
+            dist = min(ballot_dist_to_A_over_B,ballot_dist_to_B_over_A)
             slate_score += dist*weight
+
         if slate_score<best_score:
             best_score = slate_score
             best_subset = A
@@ -1093,29 +1071,29 @@ def Slate_cluster(election, verbose = True, Delta = True, share_ties = True,
     # Form clusters from the best slate
     A = best_subset
     B = tuple(set(range(1,num_cands+1))-set(A)) # the compliment of A
-    A_slate_size = len(A)
-    B_slate_size = len(B)
-    A_proxy, B_proxy = HH_vectors_of_slate(A,num_cands)
     CA = dict()
     CB = dict()
     total_shared_weight = 0
     
     for ballot, weight in election.items():
         ballot_proxy = X[ballot_to_row[ballot]]
-        A_size = len(set(A).intersection(set(ballot)))
-        B_size = len(set(B).intersection(set(ballot)))
-        if Delta:
-            diag_points =(math.comb(A_slate_size,2) - math.comb(A_slate_size-A_size,2) \
-                        + math.comb(B_slate_size,2) - math.comb(B_slate_size-B_size,2))/2
-        else:
-            diag_points = 0
-        A_dist = np.linalg.norm(A_proxy-ballot_proxy,ord=1) - diag_points
-        B_dist = np.linalg.norm(B_proxy-ballot_proxy,ord=1) - diag_points
-        if share_ties and A_dist == B_dist:
+        ballot_dist_to_A_over_B = 0
+        ballot_dist_to_B_over_A = 0
+        for i in A:
+            for j in B:
+                if ballot_proxy[i-1]>ballot_proxy[j-1]:
+                    ballot_dist_to_B_over_A += 1
+                elif ballot_proxy[i-1]<ballot_proxy[j-1]:
+                    ballot_dist_to_A_over_B += 1
+                else:
+                    ballot_dist_to_A_over_B += 0.5
+                    ballot_dist_to_B_over_A += 0.5
+
+        if share_ties and ballot_dist_to_A_over_B == ballot_dist_to_B_over_A:
             CA[ballot]=weight/2
             CB[ballot]=weight/2
             total_shared_weight +=weight
-        elif A_dist<B_dist:
+        elif ballot_dist_to_A_over_B < ballot_dist_to_B_over_A:
             CA[ballot]=weight
         else:
             CB[ballot]=weight
