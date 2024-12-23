@@ -1005,21 +1005,22 @@ def powerset(iterable): # returns a list of the nontrival non-full subsets of th
     l.pop(0)   # remove the empty set from the start of the list
     return l
 
-def Slate_cluster(election, verbose = True, Delta = True, share_ties = True,
-                  return_slates = False):
+def Slate_cluster(election, slate = None, verbose = False, dist = 'strong', 
+                  share_ties = True, return_slates = False):
     """
-    Returns a clustering with k=2 clusters using a slate-based method based the distance that ballots are from being strongly consistent.
+    Returns a clustering with k=2 clusters using a slate-based method based the distance that ballots are 
+    from being consistent.
     
-    For each slate S={A,B} (each bi-partition of the candidates), the slate's score is computed as the sum (over the weighted ballots in the election) of the ballot's distance to the closest condition: $A>B$ or $B>A$.
+    For each slate S={A,B} (each bi-partition of the candidates), the slate's score is computed as the sum 
+    (over the weighted ballots in the election) of the ballot's (strong or weak) distance to the closest condition: $A>B$ or $B>A$.
     
-    Note that a ballot has zero distance iff it is strongly consistent.  The slate with the minimal score is used to partition the ballots into 2 clusters.
-
-    If verbose == True, the slate is printed coded as a tuple that represents the first half of a bipartition of the candidates. For example the slate (1,3,5) codes for the partition {1,3,5},{2,4,6} (with 6 candidates).
+    The slate with the minimal score is used to partition the ballots into 2 clusters.
 
     Args:
         election : dictionary matching ballots to weights.
+        slate: (optional - to cluster based on a prescribed slate) a tuple of the candidates in the first slate.
         verbose : boolean. 
-        Delta :  set Delta=False to use the simpler (Delta-free) measurement that says the distance from a ballot and a condition is just the distance between their proxies.
+        dist : one of {'strong','weak'} determines whether to penalize a ballot for having an A-candidate tie with a B-candidate 
         share_ties  : (boolean) whether to divide between the clusters the weight of a ballot that's equidistance A>B and B>A (otherwise, tied ballots are assigned to cluster B)
         return_slates : (boolean) whether to also return the slates
         
@@ -1038,35 +1039,38 @@ def Slate_cluster(election, verbose = True, Delta = True, share_ties = True,
         X.append(Borda_vector(ballot,num_cands=num_cands))
         counter +=1
     
-    best_score = float('inf')
-    best_subset = tuple()
-    
-    # Determine the best slate
-    for A in powerset(range(1,num_cands+1)):
-        B = tuple(set(range(1,num_cands+1))-set(A)) # the compliment of A
-        slate_score = 0
+    if slate:
+        best_subset = slate
+    else:
+        best_score = float('inf')
+        best_subset = tuple()
         
-        for ballot, weight in election.items(): # compute dist from the ballot to the slate
-            ballot_proxy = X[ballot_to_row[ballot]]
-            ballot_dist_to_A_over_B = 0
-            ballot_dist_to_B_over_A = 0
-            for i in A:
-                for j in B:
-                    if ballot_proxy[i-1]>ballot_proxy[j-1]:
-                        ballot_dist_to_B_over_A += 1
-                    elif ballot_proxy[i-1]<ballot_proxy[j-1]:
-                        ballot_dist_to_A_over_B += 1
-                    else:
-                        ballot_dist_to_A_over_B += 0.5
-                        ballot_dist_to_B_over_A += 0.5
-            dist = min(ballot_dist_to_A_over_B,ballot_dist_to_B_over_A)
-            slate_score += dist*weight
+        # Determine the best slate
+        for A in powerset(range(1,num_cands+1)):
+            B = tuple(set(range(1,num_cands+1))-set(A)) # the compliment of A
+            slate_score = 0
+            
+            for ballot, weight in election.items(): # compute dist from the ballot to the slate
+                ballot_proxy = X[ballot_to_row[ballot]]
+                ballot_dist_to_A_over_B = 0
+                ballot_dist_to_B_over_A = 0
+                for i in A:
+                    for j in B:
+                        if ballot_proxy[i-1]>ballot_proxy[j-1]:
+                            ballot_dist_to_B_over_A += 1
+                        elif ballot_proxy[i-1]<ballot_proxy[j-1]:
+                            ballot_dist_to_A_over_B += 1
+                        elif dist == 'strong':
+                            ballot_dist_to_A_over_B += 0.5
+                            ballot_dist_to_B_over_A += 0.5
+                min_dist = min(ballot_dist_to_A_over_B,ballot_dist_to_B_over_A)
+                slate_score += min_dist*weight/(len(A)*len(B))
 
-        if slate_score<best_score:
-            best_score = slate_score
-            best_subset = A
-    if verbose:
-        print(f"Slate = {best_subset}.")
+            if slate_score<best_score:
+                best_score = slate_score
+                best_subset = A
+        if verbose:
+            print(f"Slate = {best_subset}.")
 
     # Form clusters from the best slate
     A = best_subset
@@ -1074,6 +1078,7 @@ def Slate_cluster(election, verbose = True, Delta = True, share_ties = True,
     CA = dict()
     CB = dict()
     total_shared_weight = 0
+    total_consistent_ballots = 0
     
     for ballot, weight in election.items():
         ballot_proxy = X[ballot_to_row[ballot]]
@@ -1085,9 +1090,10 @@ def Slate_cluster(election, verbose = True, Delta = True, share_ties = True,
                     ballot_dist_to_B_over_A += 1
                 elif ballot_proxy[i-1]<ballot_proxy[j-1]:
                     ballot_dist_to_A_over_B += 1
-                else:
+                elif dist == 'strong':
                     ballot_dist_to_A_over_B += 0.5
                     ballot_dist_to_B_over_A += 0.5
+        total_consistent_ballots += weight*(ballot_dist_to_A_over_B==0 or ballot_dist_to_B_over_A==0)
 
         if share_ties and ballot_dist_to_A_over_B == ballot_dist_to_B_over_A:
             CA[ballot]=weight/2
@@ -1097,8 +1103,9 @@ def Slate_cluster(election, verbose = True, Delta = True, share_ties = True,
             CA[ballot]=weight
         else:
             CB[ballot]=weight
-    # if verbose:
-    #    print(f"Portion of ballots that tied = {total_shared_weight/sum(election.values())}")
+    if verbose:
+        print(f"Portion of ballots that tied = {total_shared_weight/sum(election.values())}")
+        print(f"Portion of ballots that are {dist}ly consistent = {total_consistent_ballots/sum(election.values())}")
     
     if return_slates:
         slate_dict = {0:A, 1:B}
