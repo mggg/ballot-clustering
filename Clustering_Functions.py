@@ -1005,8 +1005,8 @@ def powerset(iterable): # returns a list of the nontrival non-full subsets of th
     l.pop(0)   # remove the empty set from the start of the list
     return l
 
-def Slate_cluster(election, slate = None, verbose = False, dist = 'strong', 
-                  share_ties = True, return_slates = False):
+def Slate_cluster(election, slate = None, verbose = False, dist = 'strong', normalized = True,
+                  share_ties = True, return_data = False):
     """
     Returns a clustering with k=2 clusters using a slate-based method based the distance that ballots are 
     from being consistent.
@@ -1021,12 +1021,15 @@ def Slate_cluster(election, slate = None, verbose = False, dist = 'strong',
         slate: (optional - to cluster based on a prescribed slate) a tuple of the candidates in the first slate.
         verbose : boolean. 
         dist : one of {'strong','weak'} determines whether to penalize a ballot for having an A-candidate tie with a B-candidate 
-        share_ties  : (boolean) whether to divide between the clusters the weight of a ballot that's equidistance A>B and B>A (otherwise, tied ballots are assigned to cluster B)
-        return_slates : (boolean) whether to also return the slates
+        normalized : (boolean) whether to normalize the distance by the number of A-vs-B comparisons.
+        share_ties  : (boolean) whether to divide between the clusters the weight of a ballot that's equidistance to A>B and B>A (otherwise, tied ballots are assigned to cluster B)
         
     Returns:
-        A clustering (list of elections).
-        (or if return_slates == True) slate_dictionary, a clustering
+        (if return_data == False) clustering
+        (if return_data == True) slate_dictionary, avg_dist_to_ordered, consistent_portion, clustering
+            slate_dictionary = {0:A_slate, 1:B_slate}
+            avg_dist_to_ordered = the average distance of the ballots to the closest of A>B or B>A  
+            consistent_portion = the portion of ballots that are (strongly or weakly) consistent with the slate
     """
     num_cands = max([item for ranking in election.keys() for item in ranking])
     # create a matrix X whose rows are the Borda proxies of the unique ballots
@@ -1048,68 +1051,98 @@ def Slate_cluster(election, slate = None, verbose = False, dist = 'strong',
         # Determine the best slate
         for A in powerset(range(1,num_cands+1)):
             B = tuple(set(range(1,num_cands+1))-set(A)) # the compliment of A
+            a = len(A)
+            b = len(B)
+
             slate_score = 0
-            
             for ballot, weight in election.items(): # compute dist from the ballot to the slate
                 ballot_proxy = X[ballot_to_row[ballot]]
-                ballot_dist_to_A_over_B = 0
-                ballot_dist_to_B_over_A = 0
+                A_over_B = 0
+                B_over_A = 0
+                AB_tie = 0
                 for i in A:
                     for j in B:
                         if ballot_proxy[i-1]>ballot_proxy[j-1]:
-                            ballot_dist_to_B_over_A += 1
+                            B_over_A += 1
                         elif ballot_proxy[i-1]<ballot_proxy[j-1]:
-                            ballot_dist_to_A_over_B += 1
-                        elif dist == 'strong':
-                            ballot_dist_to_A_over_B += 0.5
-                            ballot_dist_to_B_over_A += 0.5
-                min_dist = min(ballot_dist_to_A_over_B,ballot_dist_to_B_over_A)
-                slate_score += min_dist*weight/(len(A)*len(B))
+                            A_over_B += 1
+                        else:
+                            AB_tie += 1
+                if dist == 'strong':
+                    A_dist = (B_over_A+.5*AB_tie)/(a*b) if normalized else B_over_A+.5*AB_tie
+                    B_dist = (A_over_B+.5*AB_tie)/(a*b) if normalized else A_over_B+.5*AB_tie
+                elif dist == 'weak':
+                    A_dist = B_over_A/(A_over_B+B_over_A) if normalized else B_over_A
+                    B_dist = A_over_B/(A_over_B+B_over_A) if normalized else A_over_B
+                else:
+                    raise Exception("dist must be one of {'strong','weak'}")
+
+                slate_score += min(A_dist,B_dist)*weight
 
             if slate_score<best_score:
                 best_score = slate_score
                 best_subset = A
-        if verbose:
-            print(f"Slate = {best_subset}.")
 
     # Form clusters from the best slate
     A = best_subset
     B = tuple(set(range(1,num_cands+1))-set(A)) # the compliment of A
+    a = len(A)
+    b = len(B)
     CA = dict()
     CB = dict()
     total_shared_weight = 0
     total_consistent_ballots = 0
+    A_dist_list = []
+    weight_list = []
     
     for ballot, weight in election.items():
         ballot_proxy = X[ballot_to_row[ballot]]
-        ballot_dist_to_A_over_B = 0
-        ballot_dist_to_B_over_A = 0
+        A_over_B = 0
+        B_over_A = 0
+        AB_tie = 0
         for i in A:
             for j in B:
                 if ballot_proxy[i-1]>ballot_proxy[j-1]:
-                    ballot_dist_to_B_over_A += 1
+                    B_over_A += 1
                 elif ballot_proxy[i-1]<ballot_proxy[j-1]:
-                    ballot_dist_to_A_over_B += 1
-                elif dist == 'strong':
-                    ballot_dist_to_A_over_B += 0.5
-                    ballot_dist_to_B_over_A += 0.5
-        total_consistent_ballots += weight*(ballot_dist_to_A_over_B==0 or ballot_dist_to_B_over_A==0)
+                    A_over_B += 1
+                else:
+                    AB_tie += 1
 
-        if share_ties and ballot_dist_to_A_over_B == ballot_dist_to_B_over_A:
+        if dist == 'strong':
+            A_dist = (B_over_A+.5*AB_tie)/(a*b)
+            B_dist = (A_over_B+.5*AB_tie)/(a*b)
+        elif dist == 'weak':
+            A_dist = B_over_A/(A_over_B+B_over_A)
+            B_dist = A_over_B/(A_over_B+B_over_A) 
+        else:
+            raise Exception("dist must be one of {'strong','weak'}")
+
+        total_consistent_ballots += weight*(A_dist==0 or B_dist==0)
+        A_dist_list.append(A_dist)
+        weight_list.append(weight)
+
+        if share_ties and A_dist == B_dist:
             CA[ballot]=weight/2
             CB[ballot]=weight/2
             total_shared_weight +=weight
-        elif ballot_dist_to_A_over_B < ballot_dist_to_B_over_A:
+        elif A_dist < B_dist:
             CA[ballot]=weight
         else:
             CB[ballot]=weight
-    if verbose:
-        print(f"Portion of ballots that tied = {total_shared_weight/sum(election.values())}")
-        print(f"Portion of ballots that are {dist}ly consistent = {total_consistent_ballots/sum(election.values())}")
+    avg_dist_to_ordered = sum([min(A_dist_list[i],1-A_dist_list[i])*weight_list[i] 
+                               for i in range(len(A_dist_list))])/sum(weight_list)
+    consistent_portion = total_consistent_ballots/sum(election.values())
     
-    if return_slates:
+    if verbose:
+        print(f"Slates = {A,B}.")
+        print(f"Portion of ballots that tied = {total_shared_weight/sum(election.values())}")
+        print(f"Portion of ballots that are {dist}ly consistent = {consistent_portion}")
+        print(f"Average distance to ordered = {avg_dist_to_ordered}")
+    
+    if return_data:
         slate_dict = {0:A, 1:B}
-        return slate_dict, (CA,CB)
+        return slate_dict, avg_dist_to_ordered, consistent_portion, (CA,CB)
     else:
         return CA,CB
 
