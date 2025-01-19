@@ -23,7 +23,9 @@ def process_election_with_method(method, election):
     elif method == "medoH":
         C, centers = kmedoids(election, proxy="HH", verbose=False, return_medoids=True)
     elif method == 'slate':
-        centers, C = Slate_cluster(election, verbose=False, return_slates=True)
+        centers, _, __, C = Slate_cluster(election, verbose=False, dist = 'strong', return_data=True)
+    elif method == 'slate_weak':
+        centers, _, __, C = Slate_cluster(election, verbose=False, dist = 'weak', return_data=True)
     else:
         raise Exception("unknown method")
     if type(centers)==list:
@@ -43,73 +45,31 @@ def compute_scores(C, election, num_cands):
     dav = davies_bouldin_score(XH,labels)
     return sil, cal, dav
 
-def process_election_file(full_filename):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {full_filename}", flush=True)
+def process_election_file_with_method(method, full_filename):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {full_filename} with {method}", flush=True)
     filename = os.path.basename(full_filename)
     num_cands, election, cand_names, location = csv_parse(full_filename)
-    all_ballots = list(election.keys())
-    num_unique_ballots = len(all_ballots)
-    num_voters = sum(election.values())
-    avg_ballot_len = (
-        sum([len(ballot) * election[ballot] for ballot in all_ballots]) / num_voters
-    )
-
-    ballot_lengths = {n: 0 for n in range(num_cands + 1)}
-    for ballot in all_ballots:
-        l = len(ballot)
-        ballot_lengths[l] += 1
 
     # Compute dictionary of parties
-    parties = dict()
-    for count in range(len(cand_names)):
-        party = cand_names[count][2]
-        parties[count + 1] = party
+    party_list = party_abrevs(cand_names)
+    parties = {i: party_list[i-1] for i in range(1, num_cands + 1)} # convert to dictionary
+   
+    C, centers = process_election_with_method(method, election)
+    sil, cal, dav = (compute_scores(C, election, num_cands))
+    block_size = sum(C[0].values()) / sum(election.values())
 
-    results = []
-    Clusterings = dict()
-    method_list = ["meanBC", "meanBA", "meanH", "medoBC", "medoBA", "medoH", "slate"]
-    for method in method_list:
-        for trial in range(2):
-            C, centers = process_election_with_method(method, election)
-            if trial == 1:
-                sil, cal, dav = (compute_scores(C, election, num_cands))
-
-            Clusterings[(method,trial)]=C
-            
-            # build a dictionary storing the closenesses of the clusterings formed by the 7 different methods
-            # this dictionary will only be included in the last dataframe row (slate) for this election.
-            if method=='slate' and trial ==1:
-                method_closeness = dict()
-                for m1 in method_list:
-                    for m2 in method_list:
-                        if m1==m2:
-                            method_closeness[(m1,m1)]=Clustering_closeness(election,Clusterings[(m1,0)],Clusterings[(m1,1)])
-                        else:
-                            method_closeness[(m1,m2)]=Clustering_closeness(election,Clusterings[(m1,0)],Clusterings[(m2,0)])
-            else:
-                method_closeness = None
-
-            block_size = sum(C[0].values()) / num_voters
-
-            if trial == 1:
-                results.append(
-                    [
-                        filename,
-                        num_cands,
-                        num_voters,
-                        num_unique_ballots,
-                        avg_ballot_len,
-                        ballot_lengths,
-                        parties,
-                        method,
-                        block_size,
-                        sil,
-                        cal,
-                        dav,
-                        centers,
-                        {0:C[0], 1:C[1]},
-                        method_closeness
-                    ])
+    results = [
+            filename,
+            num_cands,
+            parties,
+            method,
+            block_size,
+            sil,
+            cal,
+            dav,
+            centers,
+            {0:C[0], 1:C[1]},
+        ]
     return results
 
 
@@ -117,12 +77,14 @@ if __name__ == "__main__":
     start_time = datetime.now()
     print(f"[{(start_time).strftime('%H:%M:%S')}] Start time", flush=True)
     print()
+    method_list = ["meanBC", "meanBA", "meanH", "medoBC", "medoBA", "medoH", "slate", "slate_weak"]
     filename_list = glob.glob("scot-elex/**/*.csv")
+    to_do_list = [(method, filename) for filename in filename_list for method in method_list ]
 
     n_jobs = 128
 
     results = Parallel(n_jobs=n_jobs)(
-        delayed(process_election_file)(file) for file in filename_list
+        delayed(process_election_file_with_method)(method, file) for method, file in to_do_list
     )
 
     # Flatten the list of lists
@@ -134,10 +96,6 @@ if __name__ == "__main__":
         columns=[
             "filename",
             "num_cands",
-            "num_voters",
-            "num_unique_ballots",
-            "avg_ballot_len",
-            "ballot_lengths",
             "parties",
             "method",
             "block_size",
@@ -145,12 +103,11 @@ if __name__ == "__main__":
             "cal",
             "dav",
             "centers",
-            "clustering",
-            "method_closeness"
-        ],
+            "clustering"
+        ]
     )
 
-    results_df.to_pickle("results.pkl")
+    results_df.to_pickle("results_2025.pkl")
     print()
     print(f"[{datetime.now().strftime('%H:%M:%S')}] End Time", flush=True)
     print(f"[{datetime.now()-start_time}] Elapsed", flush=True)
