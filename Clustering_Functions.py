@@ -34,6 +34,8 @@ from gerrychain.updaters import Tally, cut_edges
 import sknetwork as skn
 from functools import partial
 from tqdm import tqdm
+from pyclustering.cluster.kmedians import kmedians as pyclust_kmedians
+from pyclustering.utils.metric import distance_metric, type_metric
 
 # Helper function for csv_parse
 # (converts the ballot rows to ints while leaving the candidates as strings)
@@ -671,7 +673,90 @@ def kmeans(election, k=2, proxy='Borda', borda_style='pes', n_init=200, return_c
         return C, centroids
     else:
         return C
-    
+
+def kmedians(election, k=2, proxy='Borda', borda_style='pes', n_init=50, return_centroids=False):
+    """
+    Returns the clustering obtained by applying the k-medians algorithm to the proxies of the ballots.
+
+    Args:
+        election : dictionary matching ballots with weights.
+        k : the number of clusters desired.
+        proxy : choice of {'Borda', 'HH'} for Borda or head-to-head proxy vectors.
+        borda_style : choice of {'pes', 'avg'}, which is passed to Borda_vector (only if proxy == 'Borda') 
+        n_init : the algorithm runs n_init independent times with different starting centers each time, and outputs the clustering that has the best score from all the runs.
+        return_centroids : set to True if you want it to also return the centroids of the returned clustering.
+
+    Returns:
+        if return_centroids == False: returns a clustering (list of elections).
+        if return_centroids == True: returns a tuple (clustering, centroids).
+        (the centroids live in the proxy space and are the component-wise medians. They do not necessarily correspond to actual ballots)
+    """
+    num_cands = max([item for ranking in election.keys() for item in ranking])
+
+    # create a matrix whose rows are the ballots (repeated as many times as the ballot was cast) 
+    # and a dictionary matching each ballot type with its first corresponding row in the matrix
+    # and a reverse dictionary to match each row number of the matrix with a ballot
+    X = []
+    ballot_to_row = dict()
+    row_to_ballot = dict()
+    counter = 0
+    for ballot, weight in election.items():
+        ballot_to_row[ballot]=counter
+        for _ in range(weight):
+            if proxy=='Borda':
+                X.append(Borda_vector(ballot, num_cands=num_cands, borda_style=borda_style))
+            else:
+                X.append(HH_proxy(ballot,num_cands=num_cands))
+            row_to_ballot[counter]=ballot
+            counter +=1
+            
+    metric = distance_metric(type_metric.MANHATTAN)
+    best_score = float('inf') #infinity
+    best_centers = None
+    for _ in range(n_init):
+        # randomly select k ballot proxies as the initial medians
+        initial_medians = []
+        initial_ballots = []
+        for count in range(k):
+            ballot = random.choice(list(election.keys()))
+            while ballot in initial_ballots: # re-do if duplication                    
+                ballot = random.choice(list(election.keys()))
+            initial_ballots.append(ballot)
+            initial_medians.append(X[ballot_to_row[ballot]])
+
+        model = pyclust_kmedians(X, ccore=True, initial_medians = initial_medians, 
+                                metric = metric)
+        model.process()
+        subsets = model.get_clusters()
+        centers = model.get_medians() 
+
+        # pyclustering doesn't output the model's score, so we need to waste time computing it ourselves here.
+        score = 0
+        if len(centers)<k: # in the rare chance that the centers are the same
+            score = float('inf')
+        else:
+            for ballot, weight in election.items():
+                row_num = ballot_to_row[ballot]
+                data_point = X[row_num]
+                distances = [metric(data_point,center) for center in centers]
+                score += (1/2)*weight*min(distances)
+        if score<best_score:
+            #print(score)
+            best_score = score
+            best_subsets = subsets
+            best_centers = centers
+            
+    # convert best_subsets information into a list of dictionaries
+    C = [dict() for _ in range(k)]
+    for clust in range(k):
+        for row_num in best_subsets[clust]:
+            ballot = row_to_ballot[row_num]
+            C[clust][ballot]=election[ballot]
+    if return_centroids:
+        return C, best_centers
+    else:
+        return C
+
 def Manhattan_dist(A,B):
     return sum(np.abs(A-B))
 
