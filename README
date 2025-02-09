@@ -5,3 +5,5 @@ This repo contains code related to clustering/optimization methods to "learn" bl
 Tutorial.ipynb: start here to learn the toolkit.
 Clustering_Functions.py: all of the functions used to cluster and study elections.
 scot-elex: folder containing the 1070 Scottish elections
+clustering_results.pkl: a dataframe of results of running several clustering algorithms on all of the Scottish elections
+Supplemental material: Folder containing several notebooks that generate images and data from the paper.

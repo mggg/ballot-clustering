@@ -830,7 +830,47 @@ def kmedoids(election, k=2, proxy='Borda', borda_style='pes', verbose = False,
         return C, medoid_ballots
     else:
         return C
-    
+
+def Clusters_from_centers(election, centers, proxy = 'Borda', borda_style = 'pes', order=1, centers_live_in_proxy_space = False):
+    """
+    Given the centers, this clusters the ballots according to their L^p closest center (where p=order).
+    Return the clustering and the score (the sum of distances from each ballot to its closest center).
+    ARGS:
+        election: dictionary mapping ballots to weights
+        centers: dictionary mapping center index to ballot or ballot proxy
+        proxy : choice of {'Borda', 'HH'} for Borda or head-to-head proxy vectors.
+        borda_style : choice of {'pes', 'avg'}, which is passed to Borda_vector (only if proxy == 'Borda')  
+        order: the choice of p for L^p distance.  Use 1 for Manhattan, 2 for Euclidean.
+        centers_live_in_proxy_space: True if the centers are in proxy space, False if they are in ballot space
+    RETURNS:
+        (summed distance, clustering)
+        summed distance = sum of L^p distances from each ballot to its closest center
+        clustering = dictionary mapping index to cluster.
+    """
+    num_cands = max([item for ranking in election.keys() for item in ranking])
+    k = len(centers)
+
+    C = {i:dict() for i in range(k)} # initialize clustering
+    running_sum = 0
+    for ballot, weight in election.items():
+        if centers_live_in_proxy_space:
+            if proxy == 'Borda':
+                ballot_proxy = Borda_vector(ballot, num_cands, borda_style=borda_style)
+            else:
+                ballot_proxy = HH_proxy(ballot, num_cands)
+            dists = [(1/2)*np.linalg.norm(ballot_proxy - centers[i],ord=order) for i in centers.keys()]
+        else:
+            if proxy == 'Borda':
+                dists = [Borda_dist(ballot, centers[i], num_cands, borda_style=borda_style, order=order) for i in centers.keys()]
+            else:
+                dists = [HH_dist(ballot, centers[i], num_cands, order=order) for i in centers.keys()]
+
+        running_sum += weight*np.min(dists)
+        clusts = [x for x in range(k) if dists[x]==np.min(dists)] # multi-valued argmin
+        for clust in clusts:
+            C[clust][ballot]=weight/len(clusts)
+    return running_sum, C
+
 def Random_clusters(election,k=2): # returns a random clustering of the ballots.
     """ 
     Returns the clustering obtained by performing a random partition of the ballots.
