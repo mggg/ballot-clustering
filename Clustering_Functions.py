@@ -840,7 +840,7 @@ def Clusters_from_centers(election, centers, proxy = 'Borda', borda_style = 'pes
         centers: dictionary mapping center index to ballot or ballot proxy
         proxy : choice of {'Borda', 'HH'} for Borda or head-to-head proxy vectors.
         borda_style : choice of {'pes', 'avg'}, which is passed to Borda_vector (only if proxy == 'Borda')  
-        order: the choice of p for L^p distance.  Use 1 for Manhattan, 2 for Euclidean.
+        order: must be 1 or 2 (for the choice of p for L^p distance).  Use 1 for Manhattan, 2 for Euclidean.
         centers_live_in_proxy_space: True if the centers are in proxy space, False if they are in ballot space
     RETURNS:
         (summed distance, clustering)
@@ -1369,7 +1369,7 @@ def weighted_mst(graph, edge_label = 'weight'):
     )
     return spanning_tree
 
-def Modularity_cluster(election, k='Auto', num_cands = 'Auto', graph = 'all_ballots', trunc = None,
+def Modularity_cluster(election, k='Auto', num_cands = 'Auto', graph = 'cast_ballots', trunc = None,
                        method = 'Leiden', resolution = 1/20, metric = 'Borda', borda_style='pes',
                        burst_length=5, num_bursts=100, return_modularity = False):
     """
@@ -1381,7 +1381,7 @@ def Modularity_cluster(election, k='Auto', num_cands = 'Auto', graph = 'all_ball
         num_cands: the number of candidates
         graph : choice of {'all_ballots', 'cast_ballots'} for the type of ballot graph.
         trunc: the number of positions to truncate the ballots when constructing the ballot graph.
-        method : choice of {'Leiden', 'greedy', 'Recom'} for the clustering algorithm.  'greedy' is slow.
+        method : choice of {'Leiden', 'Louvain', 'greedy', 'Recom'} for the clustering algorithm.  'greedy' is slow.
         resolution : the resolution parameter for the Leiden algorithm (only used if method == 'Leiden').  Larger values gives more clusters.   
         metric : choice of {'Borda', 'HH'} for Borda or head-to-head proxy distances between pairs of ballots (only used if graph == 'cast_ballots').
         borda_style : choice of {'pes', 'avg'} (only used if graph == 'cast_ballots' and metric == 'Borda' ) 
@@ -1425,6 +1425,14 @@ def Modularity_cluster(election, k='Auto', num_cands = 'Auto', graph = 'all_ball
             raise ValueError("k must be 'Auto' if method is 'Leiden'")
         adj = sparse.csr_matrix(nx.to_scipy_sparse_array(G, weight='weight', format='csr'))
         model = skn.clustering.Leiden(resolution=resolution)   
+        labels = model.fit_predict(adj)
+        modularity = skn.clustering.get_modularity(adj, labels)
+
+    elif method == 'Louvain':
+        if k != 'Auto':
+            raise ValueError("k must be 'Auto' if method is 'Louvain'")
+        adj = sparse.csr_matrix(nx.to_scipy_sparse_array(G, weight='weight', format='csr'))
+        model = skn.clustering.Louvain(resolution=resolution)   
         labels = model.fit_predict(adj)
         modularity = skn.clustering.get_modularity(adj, labels)
     
