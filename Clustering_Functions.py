@@ -1370,7 +1370,7 @@ def weighted_mst(graph, edge_label = 'weight'):
     return spanning_tree
 
 def Modularity_cluster(election, k='Auto', num_cands = 'Auto', graph = 'cast_ballots', trunc = None,
-                       method = 'Leiden', resolution = 1/20, metric = 'Borda', borda_style='pes',
+                       method = 'greedy', resolution = 1/20, metric = 'Borda', borda_style='pes',
                        burst_length=5, num_bursts=100, return_modularity = False):
     """
     Returns the clustering obtained by applying modularity maximization to the complete ballot graph.
