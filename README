@@ -10,3 +10,4 @@ clustering_results.pkl: a dataframe of results of running several clustering alg
 Supplemental material: Folder containing several notebooks that generate images and data from the paper.
     analize dataframe.ipynb: imports clustering_results.pkl and creates some of the images in the paper.
     Mallows.ipynb: creates the images in the paper related to synthetic data from Mallows models. 
+    MDS_plots: creates the ballot- candidate- and party-MDS plots in the paper.
