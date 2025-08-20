@@ -16,9 +16,9 @@ from mpl_toolkits.mplot3d import Axes3D
 import random
 import math
 import pandas as pd
+import seaborn as sns
 from itertools import permutations, combinations, chain
-import networkx as nx
-from networkx.algorithms import community
+import more_itertools
 from sklearn.cluster import KMeans
 from sklearn_extra.cluster import KMedoids
 from sklearn.manifold import MDS
@@ -27,15 +27,11 @@ from sklearn.metrics import silhouette_score
 import scipy as sp
 from scipy import sparse
 from scipy.stats import gaussian_kde
-import gerrychain
-from gerrychain import Graph, Partition, tree, proposals
-from gerrychain.optimization import SingleMetricOptimizer
-from gerrychain.updaters import Tally, cut_edges
 import sknetwork as skn
 from functools import partial
-from tqdm import tqdm
 from pyclustering.cluster.kmedians import kmedians as pyclust_kmedians
 from pyclustering.utils.metric import distance_metric, type_metric
+from collections import Counter
 
 # Helper function for csv_parse
 # (converts the ballot rows to ints while leaving the candidates as strings)
@@ -302,7 +298,8 @@ def Candidate_matrix(election, num_cands = 'Auto'):
             to_return[ballot_position][candidate-1] += ballot_weight
     return to_return
 
-def Plot_clusters(clusters, method = 'Borda', borda_style='pes', num_cands = 'Auto', order = 'Auto', filename=None, dpi=600):
+def Plot_clusters(clusters, method = 'Borda', borda_style='pes', num_cands = 'Auto',
+                  order = 'Auto', title = 'Auto', palat = 'Auto', filename=None, dpi=600, ax = None):
     """
     Displays a bar plot that helps visualize the given election or clustering.
 
@@ -312,7 +309,10 @@ def Plot_clusters(clusters, method = 'Borda', borda_style='pes', num_cands = 'Au
         borda_style: choice of {'pes', 'avg'}, which is passed to Borda_vector.
         num_cands : the number of candidates.  Set to 'Auto' to ask the algorithm to determine it.
         order : Set order='Auto' to order the candidates by deceasing Borda scores in the first cluster.  Set say order=[3,2,4,1] to order the candidates according to the given list. 
-        filename : to save the plot.     
+        title : the title of the plot.  Set to 'Auto' to use a default title.
+        filename : to save the plot.
+        palat: a list of colors to use for the clusters.  If 'Auto', a default palette is used.
+        ax: the axes to plot on.  If None, a new figure and axes are created.
     """
     if type(clusters)==dict:
         clusters = [clusters]
@@ -347,11 +347,13 @@ def Plot_clusters(clusters, method = 'Borda', borda_style='pes', num_cands = 'Au
         Ordered_candidates = list(range(1,num_cands+1))
         Ordered_scores = Scores
 
-    palat = ['grey','purple','tomato','orange','b','c','g', 'r', 'm', 'y', 'k']
+    if palat == 'Auto':
+        palat = ['grey','purple','tomato','orange','b','c','g', 'r', 'm', 'y', 'k']
     r = np.arange(num_cands)
     width = 0.7/k
     bottoms = [np.zeros(num_cands) for _ in range(k)]
-    fig, ax = plt.subplots()
+    if ax is None:
+        fig, ax = plt.subplots()
     
     for clust in range(k):
         if method == 'Borda':
@@ -365,23 +367,26 @@ def Plot_clusters(clusters, method = 'Borda', borda_style='pes', num_cands = 'Au
                             color = (palat[clust],1/shade), label=label)
                 bottoms[clust] += Shade_scores
 
-    if method == 'Borda':
-        ax.set_title('Borda Scores of Candidates by Cluster')
-    else:
-        ax.set_title('Candidate Mentions Stacked by Ballot Position')
-    ax.set_xlabel('Candidate')
-    plt.xticks(r + (width*(k-1))/2,Ordered_candidates)
-    plt.legend()
-    if filename == None:
-        plt.show()
-    else:
-        plt.savefig(filename, dpi=dpi)
+    if title == 'Auto':
+        title = 'Borda Scores of Candidates by Cluster' if method == 'Borda' else 'Candidate Mentions Stacked by Ballot Position'
+    ax.set_title(title)
 
-def HH_proxy(ballot,num_cands):
+    #ax.set_xlabel('Candidate')
+    ax.set_xticks(r + (width*(k-1))/2)
+    ax.set_xticklabels(Ordered_candidates)
+    ax.legend()
+    if ax is None:
+        if filename == None:
+            plt.show()
+        else:
+            plt.savefig(filename, dpi=dpi)
+
+def HH_proxy(ballot,num_cands, flatten = True):
     """
     Returns the head-to-head proxy vector of the given ballot.
-        
-    This is a vector with one entry for each pair of candidates ordered in the natural way; namely {(1,2),(1,3),...,(1,n),(2,3),...}.  The entries lie in {-1/2,0,1/2} depending on whether the lower-indexed candidate {looses, ties, wins} the head-to-head comparison. 
+    If flatten is False, the returned proxy is a matrix of head-to-head comparisons.
+    Otherwise, it returns a vector with one entry for each pair of candidates ordered in the natural way; namely {(1,2),(1,3),...,(1,n),(2,3),...}.  
+    The entries lie in {-1,0,1} depending on whether the lower-indexed candidate {looses, ties, wins} the head-to-head comparison. 
 
     Args:
         ballot: a single ballot (tuple)
@@ -397,10 +402,13 @@ def HH_proxy(ballot,num_cands):
         for y in set(range(1,num_cands+1)) - set(ballot): # candidates missing from the ballot
             M[x-1,y-1] = 1
             M[y-1,x-1] = -1
-    to_return = []
-    for x,y in combinations(range(num_cands),2):
-        to_return.append(M[x,y])
-    return np.array(to_return)
+    if not flatten:
+        return M
+    else:
+        to_return = []
+        for x,y in combinations(range(num_cands),2):
+            to_return.append(M[x,y])
+        return np.array(to_return)
 
 def HH_dist(ballot1, ballot2, num_cands, order = 1):
     """
@@ -597,23 +605,29 @@ def List_merge(L,i,j): # Merges entries i and j of the given list.
             to_return.append(L[x+offset])
     return to_return
 
-def Group_candidates(election, num_cands = 'Auto', method = 'borda_completion', trunc = None, link = 'avg'):
+def Group_candidates(election, num_cands = 'Auto', method = 'borda_completion', trunc = None, 
+                     link = 'avg', verbose = True, return_all = False):
     """
     Prints the steps of repeatedly grouping candidates via agglomerative clustering
     using Candidate_dist_matrix as the pairwise distances.
 
-    Args
-        election : dictionary matching ballots with weights.
         num_cands : the number of candidates.  Set to 'Auto' to ask the algorithm to determine it.
-        method : one of {'successive', 'coappearances'}
+        method : one of {'successive', 'coappearances', 'borda', 'borda_completion'} for the method passed to Candidate_dist_matrix.
         trunc : truncate all ballots at this position before applying the method.
         link : one of {'min', 'avg', 'max'} for single, averaged or complete linkage clustering.
+        verbose : set to True to print the steps of the algorithm.
+
+        (if return_all==False) returns final bipartition of candidates as a list of sets [S1,S2]
+        (if return_all==True) returns all steps of the algorithm as a list of lists of sets [[S1,S2,...], [S1,S2,...], ...] 
+        where each inner list is a step in the algorithm.
     """
     if num_cands == 'Auto':
         num_cands = max([item for ranking in election.keys() for item in ranking])
     M = Candidate_dist_matrix(election, num_cands, method = method, trunc = trunc)
     L = [{n} for n in range(1,num_cands+1)]
-    print(L)
+    to_return = [L]
+    if verbose:
+        print(L)
     while len(L)>1:
         best_val = np.infty
         best_pair = (np.nan,np.nan)
@@ -632,7 +646,13 @@ def Group_candidates(election, num_cands = 'Auto', method = 'borda_completion', 
                     best_val = score
                     best_pair = (i,j)
         L = List_merge(L,best_pair[0],best_pair[1])
-        print(L)
+        if verbose:
+            print(L)
+        to_return.append(L)
+    if return_all:
+        return to_return[0:-1]  # Exclude the final step which is just one set with all candidates
+    else:
+        return to_return[-2] 
 
 def kmeans(election, k=2, proxy='Borda', borda_style='pes', n_init=200, return_centroids=False):
     """
@@ -837,7 +857,7 @@ def Clusters_from_centers(election, centers, proxy = 'Borda', borda_style = 'pes
     Return the clustering and the score (the sum of distances from each ballot to its closest center).
     ARGS:
         election: dictionary mapping ballots to weights
-        centers: dictionary mapping center index to ballot or ballot proxy
+        centers: list of ballots or ballot proxies
         proxy : choice of {'Borda', 'HH'} for Borda or head-to-head proxy vectors.
         borda_style : choice of {'pes', 'avg'}, which is passed to Borda_vector (only if proxy == 'Borda')  
         order: must be 1 or 2 (for the choice of p for L^p distance).  Use 1 for Manhattan, 2 for Euclidean.
@@ -858,12 +878,12 @@ def Clusters_from_centers(election, centers, proxy = 'Borda', borda_style = 'pes
                 ballot_proxy = Borda_vector(ballot, num_cands, borda_style=borda_style)
             else:
                 ballot_proxy = HH_proxy(ballot, num_cands)
-            dists = [(1/2)*np.linalg.norm(ballot_proxy - centers[i],ord=order) for i in centers.keys()]
+            dists = [(1/2)*np.linalg.norm(ballot_proxy - center,ord=order) for center in centers]
         else:
             if proxy == 'Borda':
-                dists = [Borda_dist(ballot, centers[i], num_cands, borda_style=borda_style, order=order) for i in centers.keys()]
+                dists = [Borda_dist(ballot, center, num_cands, borda_style=borda_style, order=order) for center in centers]
             else:
-                dists = [HH_dist(ballot, centers[i], num_cands, order=order) for i in centers.keys()]
+                dists = [HH_dist(ballot, center, num_cands, order=order) for center in centers]
 
         running_sum += weight*np.min(dists)
         clusts = [x for x in range(k) if dists[x]==np.min(dists)] # multi-valued argmin
@@ -1008,7 +1028,7 @@ def Centroid_and_Medoid(C, num_cands = 'Auto', proxy='Borda', borda_style='pes',
 def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', dimension = 2, n_init = 100, proxy='Borda', borda_style='pes',
                        threshold=10, label_threshold = np.infty, metric = 'Euclidean', 
                        party_names=None, filename=None, dpi = 600, 
-                       projections = 'Auto', return_data = False):
+                       projections = 'Auto', return_data = False, palat = 'Auto'):
     """
     Displays an MDS (multi-dimensional scaling) plot for the proxies of all of the ballots in the election that received at least the given threshold number of votes.
     If clusters is provided, they are colored by their cluster assignments; otherwise, by party of 1st place vote.
@@ -1027,6 +1047,7 @@ def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', dimension = 2
         filename : to save the plot.   
         projections: (optional) entering projections is useful for constructing multiple MDS plots of the same election using a common projection. 
         return_data: useful if you want to know the projection error, or for constructing multiple MDS plots of the same election using a common projection.
+        palat : a list of colors for the clusters.  Set to 'Auto' to use the default color palette.
     Returns:
         projections, error (if return_data is set to True)
     """
@@ -1034,7 +1055,7 @@ def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', dimension = 2
     if num_cands == 'Auto':
         num_cands = max([item for ranking in election.keys() for item in ranking])
 
-    cluster_palat = ['grey','purple','brown','orange','b','c','g', 'r', 'm', 'y']
+    cluster_palat = ['grey','purple','brown','orange','b','c','g', 'r', 'm', 'y'] if palat == 'Auto' else palat
     party_palat_dic = {'SNP':'#FFE135', 'Lab': '#E32636', 'Con':'#0F4D92','LD':'#FF9933','Gr':'#4CBB17', 'Ind': '#008B8B'}
 
     ballots = []
@@ -1118,8 +1139,254 @@ def Ballot_MDS_plot(election, clusters = None, num_cands = 'Auto', dimension = 2
 
     if return_data:
         return projections, error
+    
+# Helper function for Slate_cluster
+def blocs_from_slates(election, slates, num_cands='Auto', shared_ties = True, borda_style = 'pes'):
+    """
+    Returns the blocs (partition of the ballots) induced by the given slates (partition of the candidates).
+    args:
+        election : a dictionary mapping ballots (tuples) to counts (ints)
+        slates : a list of sets of candidates, e.g. [{1,2},{3,4,5}, {6,7}]
+        shared_ties : if True, ballots that tie for best slate are split evenly among their best slates.  If False, they are assigned to the lowest index cluster.
+        borda_style : choice of {'pes', 'avg'}
+    returns:
+        a clustering, e.g. [C1, C2, C3] where each Ci is an election (dictionary mapping ballots to counts)
+    """
+    k = len(slates)
+    if num_cands == 'Auto':
+        num_cands = max([item for ranking in election.keys() for item in ranking])        
+    C = {i:dict() for i in range(k)}
 
-# Helper functions for Slate_cluster
+    for ballot, weight in election.items():
+        proxy = Borda_vector(ballot, num_cands, borda_style=borda_style)
+        scores = [np.mean([proxy[cand-1] for cand in slate]) for slate in slates]
+        best = np.where(scores == np.amax(scores))[0] # indices of closest slates
+        if shared_ties:
+            for i in best:
+                C[i][ballot] = C[i].get(ballot,0) + weight/len(best)
+        else:
+            i = min(best)
+            C[i][ballot] = C[i].get(ballot,0) + weight
+    return [C[i] for i in range(k)]
+
+# helper function for Slate_cluster
+def ballot_to_simplex_coords(ballot, slates, num_cands = 'Auto', method = 'borda'):
+    """
+    Returns the simplex coordinates of given ballot with respect to the given slates.
+    args:
+        ballot: a tuple of candidates, e.g. (1,2,3,4,5,6,7)
+        slates : a list of sets of candidates, e.g. [{1,2},{3,4,5}, {6,7}]
+        method : Use 'borda' for Borda accounting.  Use 'strong' or 'weak' for head-to-head accounting.
+    returns:
+        a list of lists of positive scores (one for each slate) that sum to 1.  Higher scores indicate a closer match to the slate.
+    """
+    if num_cands == 'Auto':
+        num_cands = sum(len(slate) for slate in slates)
+    k = len(slates)
+    if method == 'borda':
+        proxy = Borda_vector(ballot, num_cands, borda_style='pess')
+        scores = [np.mean([proxy[cand-1] for cand in slate]) for slate in slates]
+        return scores / sum(scores)
+    else:
+        proxy = HH_proxy(ballot, num_cands, flatten=False)
+        alpha = np.zeros([k,k])
+        for i,j in combinations(range(k), 2):
+            l = [proxy[x-1,y-1] for x in slates[i] for y in slates[j]]
+            wins = sum([1 for x in l if x == 1])
+            losses = sum([1 for x in l if x == -1])
+            ties = sum([1 for x in l if x == 0])
+            if method == 'strong':
+                alpha[i,j] = (wins + 0.5*ties)/ len(l)
+            elif method == 'weak':
+                alpha[i,j] = wins / (wins + losses) if wins+losses > 0 else .5
+            else:
+                raise ValueError("Method must be 'borda', 'strong' or 'weak'.")
+            alpha[j,i] = 1 - alpha[i,j]
+        to_return = []
+        denom = k*(k-1)/2 # k-choose-2
+        for i in range(k):
+            to_return.append(sum([(alpha[i,j]) for j in range(k)])/denom)
+        return np.array(to_return)
+
+# helper function for Slate_cluster 
+def election_to_simplex_coords(election, slates, num_cands = 'Auto', method = 'borda'):
+    """
+    Returns the simplex coordinates of the given election with respect to the given slates.
+    args:
+        election: a list of ballots, e.g. [(1,2,3,4,5,6,7), (1,2,3,4,5,6)]
+        slates : a list of sets of candidates, e.g. [{1,2},{3,4,5}, {6,7}]
+        method : 'borda', 'strong' or 'weak': passed to ballot_to_simplex_coords
+    returns: (coords, score):
+        coords = a list of the simplex coordinate vectors for each ballot in the election (with repetition)
+        score = a weighted sum of the maximum coordinate for each ballot
+    """
+    if num_cands == 'Auto':
+        num_cands = sum(len(slate) for slate in slates)
+    to_return_coords = []
+    to_return_score = 0
+    for ballot, weight in election.items():
+        coords = ballot_to_simplex_coords(ballot, slates, num_cands=num_cands, method=method)
+        to_return_score += weight*max(coords)
+        for _ in range(weight):
+            to_return_coords.append(coords)
+    return to_return_coords, to_return_score
+
+# helper function for Slate_cluster
+def Find_optimal_slates(election, k, num_cands='Auto', method='borda', verbose=False):
+    """
+    Finds the optimal slates for a given election and number of clusters k.
+    args:
+        election : a dictionary mapping ballots (tuples) to counts (ints)
+        k : number of clusters
+        num_cands : number of candidates, or 'Auto' to infer from the election
+        method: one of 'borda', 'strong' or 'weak' -- passed to election_to_simplex_coords
+    returns:
+        a tuple (slates, score) where slates is a list of sets of candidates, score is the average distance of the ballots to the closest slate
+    """
+    if num_cands == 'Auto':
+        num_cands = max([item for ranking in election.keys() for item in ranking])
+
+    best_score = 0
+    best_slates = None
+
+    for slates in  more_itertools.set_partitions(range(1,num_cands+1), k):
+        _, score = election_to_simplex_coords(election, slates, num_cands=num_cands, method=method)
+        if score > best_score:
+            best_score = score
+            best_slates = slates
+            if verbose:
+                print(f"New best score: {best_score} with slates {best_slates}")
+
+    return best_slates, best_score
+
+def Slate_cluster(election, k=2, slates='agglom', agglom_dist = 'borda_completion', 
+                  agglom_link = 'avg', share_ties=True, return_slates = False):
+    """
+    Returns a k-clustering using a slate-based method. 
+
+    Args:
+        election : dictionary matching ballots to weights.
+        k: (int) the number of clusters desired.
+        slates: a list of sets of candidates, e.g. [{1,2},{3,4,5},{6,7}].
+            or set slates = 'agglom' to automatically generate slates via agglomerative clustering.
+            or set slates = 'optimize' to automatically generate slates via optimization.
+        agglom_dist: one of {'borda' (d_1), 'borda_completion' (d_2)}: only used if method=='agglom' -- passed to Group_candidates.
+        agglom_link: one of {'min', 'avg', 'max'} for single, averaged or complete linkage clustering: only used if method=='agglom' -- passed to Group_candidates.
+        share_ties: (boolean) whether to divide between the clusters the weight of a ballot that's equidistance to slates (otherwise, it is assigned to the lowest index cluster)
+        
+    Returns:
+        (if return_slates == False) clustering
+        (if return_slates == True) slate_list, clustering
+    """
+    num_cands = max([item for ranking in election.keys() for item in ranking])
+
+    if slates == 'agglom':
+        groupings = Group_candidates(election, num_cands='Auto', method=agglom_dist, link=agglom_link,
+                                     return_all=True, verbose = False)
+        slates = groupings[num_cands-k]
+    elif slates == 'optimize':
+        best_score = 0
+        best_slates = None
+        for my_slates in  more_itertools.set_partitions(range(1,num_cands+1), k):
+            _, score = election_to_simplex_coords(election, my_slates, num_cands=num_cands, method='borda')
+            if score > best_score:
+                best_score = score
+                best_slates = my_slates
+        slates = [set(S) for S in best_slates]
+    else:
+        if len(slates) != k:
+            raise Exception(f"slates must be a list of {k} sets of candidates or 'agglom' or 'optimize'.")
+
+    C = blocs_from_slates(election, slates, num_cands=num_cands, shared_ties=share_ties, borda_style='pes')
+    
+    if return_slates:
+        return slates, C
+    else:
+        return C
+
+def Plot_simplex_kde(simplex_coords, filename=None, dpi=300, discrete=False, bins=20):
+    '''
+    Shows a density plot for the given 2D or 3D simplex coordinates.
+    ARGS:
+        simplex_coords: list of coordinates (each a list of 2 or 3 nonnegative numbers that sum to 1)
+        filename: if provided, saves the plot to this file.
+        dpi: (int) resolution of the saved plot
+        discrete: (boolean) whether to use a discrete plot or a continuous KDE plot
+        bins: (int) number of bins to use for the histogram (only used if discrete=True and dimension = 2)
+    '''
+    dim = len(simplex_coords[0])
+
+    if dim == 2:
+        X = [x for [x,y] in simplex_coords]
+
+        if discrete:
+            # Make bins centered at 0 and 1
+            edges = np.linspace(0, 1, bins+1)
+            bin_width = edges[1] - edges[0]
+            # extend slightly beyond 0 and 1
+            edges = np.linspace(-bin_width/2, 1+bin_width/2, bins+1)
+
+            plt.hist(X, bins=edges, density=True, 
+                    color="skyblue", edgecolor="k", align="mid")
+
+            # extend x-limits so bars at 0 and 1 are fully visible
+            plt.xlim(-bin_width/2, 1+bin_width/2)
+            plt.ylabel("Frequency")
+        else:
+            sns.kdeplot(X, fill=True, bw_adjust=0.5, clip=(0,1))
+            plt.xlim(0, 1)
+            plt.ylabel(None)
+
+    elif dim == 3:
+        # Convert simplex coordinates to 2D points in an equilateral triangle
+        A = np.array([0, 0])
+        B = np.array([1, 0])
+        C = np.array([0.5, np.sqrt(3)/2])
+        coords = []
+        for x1, x2, x3 in simplex_coords:
+            point = x1 * A + x2 * B + x3 * C
+            coords.append(point)
+        coords = np.array(coords)
+
+        plt.figure(figsize=(6,6))
+        triangle = np.array([[0, 0], [1, 0], [0.5, np.sqrt(3)/2], [0, 0]])
+        plt.plot(triangle[:,0], triangle[:,1], 'k-')
+        plt.axis('equal')
+        plt.axis('off')
+
+        if discrete:
+            # Count multiplicities of unique simplex coordinates
+            counter = Counter(map(tuple, simplex_coords))
+            for coord, count in counter.items():
+                point = coord[0] * A + coord[1] * B + coord[2] * C
+                plt.scatter(point[0], point[1], 
+                            s=10*count,   # area ∝ count (radius ∝ sqrt(count))
+                            color="blue", alpha=0.6, edgecolors="k")
+        else:
+            # Continuous KDE heatmap
+            x, y = coords[:, 0], coords[:, 1]
+            xy = np.vstack([x, y])
+            kde = gaussian_kde(xy)
+            
+            # Grid over triangle bounding box
+            xi, yi = np.mgrid[0:1:200j, 0:np.sqrt(3)/2:200j]
+            grid = np.vstack([xi.ravel(), yi.ravel()])
+            zi = kde(grid).reshape(xi.shape)
+
+            # Mask points outside the triangle
+            mask = (yi <= -np.sqrt(3)*xi + np.sqrt(3)) & (yi <= np.sqrt(3)*xi)
+            zi[~mask] = np.nan
+
+            plt.pcolormesh(xi, yi, zi, shading='auto', cmap='hot', alpha=0.8)
+
+    else:
+        raise ValueError("Plot_simplex_kde only supports 2-simplex and 3-simplex coordinates.") 
+
+    if filename:
+        plt.savefig(filename, dpi=dpi, bbox_inches='tight')
+    plt.show()
+
+# Helper functions for Slate_cluster_old
 def powerset(iterable): # returns a list of the nontrival non-full subsets of the given iterable
     """
     Helper function for Slate_cluster   
@@ -1130,7 +1397,7 @@ def powerset(iterable): # returns a list of the nontrival non-full subsets of th
     l.pop(0)   # remove the empty set from the start of the list
     return l
 
-def Slate_cluster(election, slate = None, verbose = False, dist = 'strong', normalized = True,
+def Slate_cluster_old(election, slate = None, verbose = False, dist = 'strong', normalized = True,
                   share_ties = True, return_data = False):
     """
     Returns a clustering with k=2 clusters using a slate-based method based the distance that ballots are 
@@ -1270,228 +1537,3 @@ def Slate_cluster(election, slate = None, verbose = False, dist = 'strong', norm
         return slate_dict, avg_dist_to_ordered, consistent_portion, (CA,CB)
     else:
         return CA,CB
-
-def All_ballot_graph(num_cands, election=None, trunc=None):
-    """  
-    Returns a graph whose nodes are all of the possible ballots on num_cands candidates.
-    The weight of a node is the number of times the ballot was cast (or 0 if no election is given).
-    There is an edge (u,v) if the ballots u,v differ by one swap or truncation, with edge-weight (1+weight(u))(1+weight(v)).
-
-    Args:
-        num_cands : the number candidates
-        election : a dictionary of ballots and their weights (optional).
-        Trunc : the number of positions to truncate the ballots to (optional).
-
-    Returns:
-        networkx graph
-    """
-    k = trunc if trunc is not None else num_cands-1
-    G = nx.Graph()
-    for num_positions_filled in range(1, k + 1):
-        for ballot in permutations(range(1, num_cands + 1), num_positions_filled):
-            G.add_node(ballot, ballot_weight=0 if election else 1)
-    if election:
-        for ballot, ballot_weight in election.items():
-            truncated_ballot = ballot[:k]
-            if truncated_ballot in G.nodes():
-                G.add_node(truncated_ballot, ballot_weight=ballot_weight
-                            + G.nodes()[truncated_ballot]["ballot_weight"])
-            else:
-                raise Exception(f"Unknown ballot found in election: {truncated_ballot}")
-    for old_ballot in G.nodes():
-        num_positions_filled = len(old_ballot)
-        if num_positions_filled > 1:
-            for i in range(num_positions_filled - 1):
-                # Add swapping edges.
-                new_ballot = list(old_ballot)
-                new_ballot[i + 1] = old_ballot[i]
-                new_ballot[i] = old_ballot[i + 1]
-                G.add_edge(old_ballot, tuple(new_ballot))
-                # Add truncation edges.
-                G.add_edge(old_ballot, old_ballot[:-1])
-    # Add edge weights.
-    for u, v in G.edges():
-        G.edges[u, v]['weight'] = (G.nodes[u]['ballot_weight']+1)*(G.nodes[v]['ballot_weight']+1)
-    return G
-
-def Cast_ballot_graph(election, num_cands='Auto', trunc = None, metric = 'Borda', borda_style='pes'):
-    """  
-    Returns the complete graph whose nodes are the cast ballot types in the given election.
-    The edge weight between two nodes equals n1*n2/d, where n1,n2 are the ballot weights (the number of times cast)
-    and d is the distance between the ballots (with respect to the chosen metric)
-
-    Args:
-        election : dictionary matching ballots with weights.
-        num_cands : the number candidates.
-        metric : choice of {'Borda', 'HH'} for Borda or head-to-head distance between pairs of ballots.
-        borda_style : choice of {'pes', 'avg'} (only used if metric == 'Borda') 
-
-    Returns:
-        networkx graph
-    """
-    if num_cands == 'Auto':
-        num_cands = max([item for ranking in election.keys() for item in ranking])
-    
-    if trunc == None:
-        trunc = num_cands - 1
-
-    G = nx.Graph()
-    for ballot, ballot_weight in election.items():
-        truncated_ballot = ballot[:trunc]
-        if truncated_ballot in G.nodes():
-            G.nodes[truncated_ballot]['ballot_weight'] += ballot_weight    
-        else:
-            G.add_node(truncated_ballot, ballot_weight=ballot_weight)
- 
-    for b1,b2 in permutations(G.nodes(),2):
-        if metric == 'Borda':
-            dist = Borda_dist(b1,b2, num_cands=num_cands, borda_style=borda_style)
-        else:
-            dist = HH_dist(b1,b2, num_cands=num_cands)
-
-        G.add_edge(b1, tuple(b2),
-                weight=G.nodes[b1]['ballot_weight']*G.nodes[b2]['ballot_weight']/dist)
- 
-    return G
-
-# Helper function for Modularity_cluster with method='Recom'
-def weighted_mst(graph, edge_label = 'weight'):
-    """
-    Builds a spanning tree chosen by Kruskal's method.
-    The weight of each edge e is randomly chosen from the interval [0, 1/edge_label].
-    """
-    for edge in graph.edges():
-        weight = random.random()*(1/graph.edges[edge][edge_label])
-        graph.edges[edge]["random_weight"] = weight
-
-    spanning_tree = nx.tree.minimum_spanning_tree(
-        graph, algorithm="kruskal", weight="random_weight"
-    )
-    return spanning_tree
-
-def Modularity_cluster(election, k='Auto', num_cands = 'Auto', graph = 'cast_ballots', trunc = None,
-                       method = 'greedy', resolution = 1/20, metric = 'Borda', borda_style='pes',
-                       burst_length=5, num_bursts=100, return_modularity = False):
-    """
-    Returns the clustering obtained by applying modularity maximization to the complete ballot graph.
-
-    Args:
-        election : dictionary matching ballots with weights.
-        k : the number of clusters desired.  Must be 'Auto' for 'Leiden'; must be specified for 'Recom'.
-        num_cands: the number of candidates
-        graph : choice of {'all_ballots', 'cast_ballots'} for the type of ballot graph.
-        trunc: the number of positions to truncate the ballots when constructing the ballot graph.
-        method : choice of {'Leiden', 'Louvain', 'greedy', 'Recom'} for the clustering algorithm.  'greedy' is slow.
-        resolution : the resolution parameter for the Leiden algorithm (only used if method == 'Leiden').  Larger values gives more clusters.   
-        metric : choice of {'Borda', 'HH'} for Borda or head-to-head proxy distances between pairs of ballots (only used if graph == 'cast_ballots').
-        borda_style : choice of {'pes', 'avg'} (only used if graph == 'cast_ballots' and metric == 'Borda' ) 
-        burst_length : the number of steps in each short burst (only used if method == 'Recom').
-        num_bursts : the number of short bursts (only used if method == 'Recom').
-        return_modularity : if True, returns the modularity of the clustering.
-    
-    Returns:
-        a clustering (if return_modularity == False).
-        clustering, modularity (if return_modularity == True)
-    """
-
-    if num_cands == 'Auto':
-        num_cands = max([item for ranking in election.keys() for item in ranking])
-
-    if trunc == None:
-        trunc = num_cands - 1
-
-    if graph == 'cast_ballots':
-        G = Cast_ballot_graph(election, num_cands=num_cands, trunc=trunc, metric=metric, borda_style=borda_style)
-    elif graph == 'all_ballots':
-        G = All_ballot_graph(num_cands, election, trunc=trunc)
-    else:
-        raise ValueError("graph must be 'cast_ballots' or 'all_ballots'")
-
-    if method == 'greedy':
-        if k == 'Auto':
-            community_list = community.greedy_modularity_communities(G,weight='weight')
-        else:
-            community_list = community.greedy_modularity_communities(G,weight='weight', cutoff=k, best_n=k)
-        modularity = community.modularity(G,community_list)
-        
-        # convert community_list to a dictionary matching truncated ballots to labels.
-        label_dict = {}
-        for label, this_community in enumerate(community_list):
-            for ballot in this_community:
-                label_dict[ballot] = label
-
-    elif method == 'Leiden':
-        if k != 'Auto':
-            raise ValueError("k must be 'Auto' if method is 'Leiden'")
-        adj = sparse.csr_matrix(nx.to_scipy_sparse_array(G, weight='weight', format='csr'))
-        model = skn.clustering.Leiden(resolution=resolution)   
-        labels = model.fit_predict(adj)
-        modularity = skn.clustering.get_modularity(adj, labels)
-
-    elif method == 'Louvain':
-        if k != 'Auto':
-            raise ValueError("k must be 'Auto' if method is 'Louvain'")
-        adj = sparse.csr_matrix(nx.to_scipy_sparse_array(G, weight='weight', format='csr'))
-        model = skn.clustering.Louvain(resolution=resolution)   
-        labels = model.fit_predict(adj)
-        modularity = skn.clustering.get_modularity(adj, labels)
-    
-    elif method == 'Recom':
-        if k == 'Auto':
-            raise ValueError("k must be specified if method is 'Recom'")
-
-        total_weight = sum(election.values())
-        GG = gerrychain.graph.graph.Graph(G) # convert to gerrychain graph
-        initial_assignment = tree.recursive_tree_part(GG, pop_col = 'ballot_weight', 
-                                pop_target=total_weight/k, epsilon=1, parts=range(k),
-                                method = partial(tree.bipartition_tree, spanning_tree_fn=weighted_mst))
-        def mod_score(partition):
-            labels = np.array([partition.assignment[ballot] for ballot in ballot_list])  
-            return skn.clustering.get_modularity(adj, labels)
-
-        initial_partition = Partition(GG, assignment=initial_assignment,
-                                        updaters={'cut_edges': cut_edges, 'modularity': mod_score})
-        ballot_list = list(initial_partition.graph.nodes)
-        adj = sparse.csr_matrix(nx.to_scipy_sparse_array(G, weight='weight', format='csr'))
-        proposal = partial(proposals.recom, 
-                        pop_col='ballot_weight', pop_target=total_weight/k, epsilon=1,
-                        method = partial(tree.bipartition_tree, spanning_tree_fn=weighted_mst))
-
-        optimizer = SingleMetricOptimizer(
-            proposal=proposal,
-            initial_state=initial_partition,
-            constraints=[],
-            optimization_metric = lambda p: p['modularity'],
-            maximize=True
-        )
-        for _ in optimizer.short_bursts(burst_length=burst_length, num_bursts=num_bursts,
-                                                with_progress_bar=True):
-            pass
-        best_partition = optimizer.best_part 
-        modularity = optimizer.best_score
-        labels = np.array([best_partition.assignment[ballot] for ballot in ballot_list])  
-
-    else:
-        raise ValueError("method must be 'greedy', 'Leiden', or 'Recom'")
-
-    if method == 'Leiden' or method == 'Recom':
-        # convert labels to a dictionary matching truncated ballots to labels.
-        node_list = list(G.nodes)
-        label_dict = {}
-        for i in range(len(node_list)):
-            label_dict[node_list[i]] = labels[i]
-
-    # convert label_dict to our standard format for a clustering: a list of elections.
-    k = max(label_dict.values()) + 1 # number of clusters
-    C = [{} for _ in range(k)]
-    for ballot, weight in election.items():
-        truncated_ballot = ballot[:trunc]
-        label = label_dict[truncated_ballot]
-        C[label][ballot] = weight
-    # remove empty clusters (which come from labels only assigned to uncast ballots)
-    C = [c for c in C if sum(c.values()) > 0]  
-         
-    if return_modularity:
-        return C, modularity
-    else:
-        return C
